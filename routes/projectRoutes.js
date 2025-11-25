@@ -2,7 +2,7 @@ const express = require('express');
 const router = express.Router();
 const db = require('../db/connection'); 
 const multer = require('multer'); 
-const path = require('path');    
+const path = require('path');    
 
 // =========================================================
 // 📝 ACTIVITY LOGGING HELPER
@@ -74,6 +74,78 @@ async function deleteAllProjectFiles(projectNo) {
     console.log(`Cleaned up all BLOB file records for project ${projectNo}.`);
 }
 
+// =========================================================
+// 📊 PROJECT COMPLETION CALCULATION
+// =========================================================
+
+/**
+ * Calculate completion percentages for all project sections
+ * @param {string} projectNo - The project number
+ * @returns {Object} Completion percentages for each section
+ */
+const calculateCompletionPercentage = async (projectNo) => {
+    try {
+        console.log(`🔍 Calculating completion for project: ${projectNo}`);
+        
+        const completion = {
+            panelSlab: 0,
+            cutting: 0,
+            door: 0,
+            stripCurtain: 0,
+            accessories: 0,
+            system: 0
+        };
+
+        const sections = [
+            { key: 'panelSlab', table: 'panel_tasks' },
+            { key: 'cutting', table: 'cutting_tasks' },
+            { key: 'door', table: 'door_tasks' },
+            { key: 'accessories', table: 'accessories_tasks' },
+        ];
+
+        for (const section of sections) {
+            try {
+                console.log(`📋 Checking ${section.table} for project ${projectNo}`);
+
+                // Calculate completion percentage directly
+                const [result] = await db.query(`
+                    SELECT 
+                        COUNT(*) as total_tasks,
+                        SUM(CASE WHEN status = 'completed' THEN 1 ELSE 0 END) as completed_tasks
+                    FROM ${section.table} 
+                    WHERE project_no = ?
+                `, [projectNo]);
+                
+                console.log(`📊 ${section.table} query result:`, result[0]);
+                
+                if (result.length > 0) {
+                    const totalTasks = parseInt(result[0].total_tasks) || 0;
+                    const completedTasks = parseInt(result[0].completed_tasks) || 0;
+                    
+                    console.log(`📈 ${section.table}: ${completedTasks} completed / ${totalTasks} total tasks`);
+                    
+                    if (totalTasks > 0) {
+                        const percentage = Math.round((completedTasks / totalTasks) * 100);
+                        completion[section.key] = percentage;
+                        console.log(`✅ ${section.table}: ${percentage}% complete`);
+                    } else {
+                        console.log(`❌ ${section.table}: No tasks found for project ${projectNo}`);
+                        completion[section.key] = 0;
+                    }
+                }
+            } catch (error) {
+                console.log(`❌ ${section.table} error: ${error.message}`);
+                completion[section.key] = 0;
+            }
+        }
+
+        console.log(`🎯 Final completion for ${projectNo}:`, completion);
+        return completion;
+    } catch (error) {
+        console.error('Error in calculateCompletionPercentage:', error);
+        throw error;
+    }
+};
 
 // =========================================================
 // 📂 FILE ROUTES (MANAGEMENT)
@@ -382,6 +454,7 @@ router.get('/files/:projectNo', async (req, res) => {
     }
 });
 
+// --- GET /api/projects/file/blob/:id: Stream file BLOB data ---
 router.get('/file/blob/:id', async (req, res) => {
     const fileId = req.params.id;
 
@@ -414,6 +487,40 @@ router.get('/file/blob/:id', async (req, res) => {
         res.status(500).json({ 
             error: 'Failed to retrieve file BLOB from the database.',
             details: err.message
+        });
+    }
+});
+
+// =========================================================
+// 📊 PROJECT COMPLETION ROUTE
+// =========================================================
+
+// --- GET /api/projects/completion/:projectNo: Get completion percentages ---
+router.get('/completion/:projectNo', async (req, res) => {
+    try {
+        const { projectNo } = req.params;
+
+        // Validate project exists first
+        const [projectCheck] = await db.query(
+            'SELECT id FROM projects WHERE projectNo = ?',
+            [projectNo]
+        );
+
+        if (projectCheck.length === 0) {
+            return res.status(404).json({ 
+                error: `Project with number ${projectNo} not found` 
+            });
+        }
+
+        // Calculate completion percentages
+        const completion = await calculateCompletionPercentage(projectNo);
+
+        res.json(completion);
+    } catch (error) {
+        console.error('Error fetching project completion:', error);
+        res.status(500).json({ 
+            error: 'Failed to fetch project completion data',
+            details: error.message 
         });
     }
 });

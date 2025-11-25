@@ -9,6 +9,10 @@ const cors = require('cors');
 // Import the specific routes handler file. 
 // ASSUMPTION: The file is named 'projectRoutes.js' inside the 'routes' folder.
 const projectRoutes = require('./routes/projectRoutes');
+const panelTasksRoutes = require('./routes/panelTasks');
+const doorTasksRouter = require('./routes/doorTasks');
+const accessoriesTasksRouter = require('./routes/accessoriesTasks');
+const cuttingTasksRouter = require('./routes/cuttingTasks');
 
 const app = express();
 // Use the port defined in .env (5000), or default to 5000
@@ -35,7 +39,10 @@ app.get('/', (req, res) => {
 // Attach the resource-specific routes. All requests starting with /api/projects 
 // will be handed off to the logic defined in projectRoutes.js
 app.use('/api/projects', projectRoutes);
-
+app.use('/api/panel-tasks', panelTasksRoutes);
+app.use('/api/door-tasks', doorTasksRouter);
+app.use('/api/accessories-tasks', accessoriesTasksRouter);
+app.use('/api/cutting-tasks', cuttingTasksRouter);
 
 // --- Start the Server ---
 
