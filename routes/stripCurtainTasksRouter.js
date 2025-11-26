@@ -4,7 +4,8 @@ const pool = require('../db/connection');
 const { updateProjectCounts } = require('./projectUpdater'); // <--- Import the update utility
 
 // Define the specific task type for this router's database columns
-const TASK_TYPE_PREFIX = 'door'; 
+// **CHANGE: TASK_TYPE_PREFIX**
+const TASK_TYPE_PREFIX = 'strip_curtain'; 
 
 // Utility function (updated with project_no)
 const formatTask = (task) => ({
@@ -19,23 +20,24 @@ const formatTask = (task) => ({
 });
 
 // =========================================================
-// GET /api/door-tasks - Get all door tasks
-// (No change needed here)
+// GET /api/strip-curtain-tasks - Get all strip curtain tasks
+// **CHANGE: Endpoint & Table Name**
 // =========================================================
 router.get('/', async (req, res) => {
-    const query = 'SELECT * FROM door_tasks ORDER BY created_at DESC';
+    const query = 'SELECT * FROM strip_curtain_tasks ORDER BY created_at DESC';
     try {
         const [results] = await pool.execute(query);
         const tasks = results.map(formatTask);
         res.json(tasks);
     } catch (err) {
-        console.error('Error fetching door tasks:', err);
-        return res.status(500).json({ error: 'Failed to fetch door tasks' });
+        console.error('Error fetching strip curtain tasks:', err);
+        return res.status(500).json({ error: 'Failed to fetch strip curtain tasks' });
     }
 });
 
 // =========================================================
-// POST /api/door-tasks - Create (Increments total_door)
+// POST /api/strip-curtain-tasks - Create (Increments total_strip_curtain)
+// **CHANGE: Table Name & Task Prefix for updateProjectCounts**
 // =========================================================
 router.post('/', async (req, res) => {
     const { title, description, priority, status, project_no, due_date } = req.body;
@@ -53,7 +55,7 @@ router.post('/', async (req, res) => {
     const sanitizedDueDate = due_date === undefined || due_date === '' ? null : due_date;
     const initialStatus = status || 'pending'; // Default status
 
-    const insertSql = `INSERT INTO door_tasks (title, description, priority, status, project_no, due_date) 
+    const insertSql = `INSERT INTO strip_curtain_tasks (title, description, priority, status, project_no, due_date) 
                        VALUES (?, ?, ?, ?, ?, ?)`;
     
     try {
@@ -68,16 +70,16 @@ router.post('/', async (req, res) => {
         ]);
         const insertId = insertResults.insertId;
 
-        // 2. Update project counts: Increment total_door
+        // 2. Update project counts: Increment total_strip_curtain
         await updateProjectCounts(project_no, TASK_TYPE_PREFIX, 'total', 1);
 
-        // 3. If the task is created as 'completed', also increment completed_door
+        // 3. If the task is created as 'completed', also increment completed_strip_curtain
         if (initialStatus.toLowerCase() === 'completed') {
             await updateProjectCounts(project_no, TASK_TYPE_PREFIX, 'completed', 1);
         }
         
         // 4. Fetch and return the newly created task
-        const selectSql = 'SELECT * FROM door_tasks WHERE id = ?';
+        const selectSql = 'SELECT * FROM strip_curtain_tasks WHERE id = ?';
         const [rows] = await pool.execute(selectSql, [insertId]);
         
         if (rows.length === 0) {
@@ -86,13 +88,14 @@ router.post('/', async (req, res) => {
         
         res.status(201).json(formatTask(rows[0]));
     } catch (err) {
-        console.error('Error creating door task or updating project counts:', err);
-        return res.status(500).json({ error: 'Failed to create door task' });
+        console.error('Error creating strip curtain task or updating project counts:', err);
+        return res.status(500).json({ error: 'Failed to create strip curtain task' });
     }
 });
 
 // =========================================================
-// PATCH /api/door-tasks/:id - Update (Handles status change)
+// PATCH /api/strip-curtain-tasks/:id - Update (Handles status change)
+// **CHANGE: Table Name & Task Prefix for updateProjectCounts**
 // =========================================================
 router.patch('/:id', async (req, res) => {
     const taskId = parseInt(req.params.id);
@@ -106,7 +109,7 @@ router.patch('/:id', async (req, res) => {
 
     try {
         // 1. Fetch the existing task status and project number BEFORE updating
-        const [existingRows] = await pool.execute('SELECT project_no, status FROM door_tasks WHERE id = ?', [taskId]);
+        const [existingRows] = await pool.execute('SELECT project_no, status FROM strip_curtain_tasks WHERE id = ?', [taskId]);
         if (existingRows.length === 0) {
             return res.status(404).json({ error: 'Task not found' });
         }
@@ -127,7 +130,7 @@ router.patch('/:id', async (req, res) => {
             
             // Convert empty string to null for description and due_date
             const value = (updates[field] === '' && (field === 'description' || field === 'due_date')) 
-                            ? null : updates[field];
+                             ? null : updates[field];
             updateValues.push(value);
         }
     }
@@ -137,7 +140,7 @@ router.patch('/:id', async (req, res) => {
     }
 
     const setClause = fieldsToUpdate.join(', ');
-    const updateSql = `UPDATE door_tasks SET ${setClause} WHERE id = ?`;
+    const updateSql = `UPDATE strip_curtain_tasks SET ${setClause} WHERE id = ?`;
     const finalBindValues = [...updateValues, taskId];
 
     try {
@@ -148,28 +151,29 @@ router.patch('/:id', async (req, res) => {
         const newStatus = updates.status ? updates.status.toLowerCase() : previousTask.status.toLowerCase();
         const oldStatus = previousTask.status.toLowerCase();
 
-        // Check for transition to 'completed' (+1 to completed_door)
+        // Check for transition to 'completed' (+1 to completed_strip_curtain)
         if (newStatus === 'completed' && oldStatus !== 'completed') {
             await updateProjectCounts(previousTask.project_no, TASK_TYPE_PREFIX, 'completed', 1);
         } 
-        // Check for transition away from 'completed' (-1 to completed_door)
+        // Check for transition away from 'completed' (-1 to completed_strip_curtain)
         else if (newStatus !== 'completed' && oldStatus === 'completed') {
             await updateProjectCounts(previousTask.project_no, TASK_TYPE_PREFIX, 'completed', -1);
         }
 
         // 4. Fetch and return the updated row
-        const selectSql = 'SELECT * FROM door_tasks WHERE id = ?';
+        const selectSql = 'SELECT * FROM strip_curtain_tasks WHERE id = ?';
         const [rows] = await pool.execute(selectSql, [taskId]);
 
         res.json(formatTask(rows[0]));
     } catch (err) {
-        console.error('Error updating door task or project counts:', err);
-        return res.status(500).json({ error: 'Failed to update door task' });
+        console.error('Error updating strip curtain task or project counts:', err);
+        return res.status(500).json({ error: 'Failed to update strip curtain task' });
     }
 });
 
 // =========================================================
-// DELETE /api/door-tasks/:id - Delete (Decrements total/completed_door)
+// DELETE /api/strip-curtain-tasks/:id - Delete (Decrements total/completed_strip_curtain)
+// **CHANGE: Table Name & Task Prefix for updateProjectCounts**
 // =========================================================
 router.delete('/:id', async (req, res) => {
     const taskId = parseInt(req.params.id);
@@ -178,32 +182,32 @@ router.delete('/:id', async (req, res) => {
 
     try {
         // 1. Fetch the task's project number and status BEFORE deletion
-        const [existingRows] = await pool.execute('SELECT project_no, status FROM door_tasks WHERE id = ?', [taskId]);
+        const [existingRows] = await pool.execute('SELECT project_no, status FROM strip_curtain_tasks WHERE id = ?', [taskId]);
         if (existingRows.length === 0) {
             return res.status(404).json({ error: 'Task not found' });
         }
         taskToDelete = existingRows[0];
         
         // 2. Delete the task
-        const deleteSql = 'DELETE FROM door_tasks WHERE id = ?';
+        const deleteSql = 'DELETE FROM strip_curtain_tasks WHERE id = ?';
         const [results] = await pool.execute(deleteSql, [taskId]);
         
         if (results.affectedRows === 0) {
             return res.status(404).json({ error: 'Task not found' });
         }
 
-        // 3. Update project counts: Decrement total_door
+        // 3. Update project counts: Decrement total_strip_curtain
         await updateProjectCounts(taskToDelete.project_no, TASK_TYPE_PREFIX, 'total', -1);
         
-        // 4. If the deleted task was 'completed', also decrement completed_door
+        // 4. If the deleted task was 'completed', also decrement completed_strip_curtain
         if (taskToDelete.status.toLowerCase() === 'completed') {
             await updateProjectCounts(taskToDelete.project_no, TASK_TYPE_PREFIX, 'completed', -1);
         }
         
         res.status(200).json({ message: 'Task deleted successfully' });
     } catch (err) {
-        console.error('Error deleting door task or updating project counts:', err);
-        return res.status(500).json({ error: 'Failed to delete door task' });
+        console.error('Error deleting strip curtain task or updating project counts:', err);
+        return res.status(500).json({ error: 'Failed to delete strip curtain task' });
     }
 });
 

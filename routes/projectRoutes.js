@@ -78,82 +78,15 @@ async function deleteAllProjectFiles(projectNo) {
 // 📊 PROJECT COMPLETION CALCULATION
 // =========================================================
 
-/**
- * Calculate completion percentages for all project sections
- * @param {string} projectNo - The project number
- * @returns {Object} Completion percentages for each section
- */
-const calculateCompletionPercentage = async (projectNo) => {
-    try {
-        console.log(`🔍 Calculating completion for project: ${projectNo}`);
-        
-        const completion = {
-            panelSlab: 0,
-            cutting: 0,
-            door: 0,
-            stripCurtain: 0,
-            accessories: 0,
-            system: 0
-        };
-
-        const sections = [
-            { key: 'panelSlab', table: 'panel_tasks' },
-            { key: 'cutting', table: 'cutting_tasks' },
-            { key: 'door', table: 'door_tasks' },
-            { key: 'accessories', table: 'accessories_tasks' },
-        ];
-
-        for (const section of sections) {
-            try {
-                console.log(`📋 Checking ${section.table} for project ${projectNo}`);
-
-                // Calculate completion percentage directly
-                const [result] = await db.query(`
-                    SELECT 
-                        COUNT(*) as total_tasks,
-                        SUM(CASE WHEN status = 'completed' THEN 1 ELSE 0 END) as completed_tasks
-                    FROM ${section.table} 
-                    WHERE project_no = ?
-                `, [projectNo]);
-                
-                console.log(`📊 ${section.table} query result:`, result[0]);
-                
-                if (result.length > 0) {
-                    const totalTasks = parseInt(result[0].total_tasks) || 0;
-                    const completedTasks = parseInt(result[0].completed_tasks) || 0;
-                    
-                    console.log(`📈 ${section.table}: ${completedTasks} completed / ${totalTasks} total tasks`);
-                    
-                    if (totalTasks > 0) {
-                        const percentage = Math.round((completedTasks / totalTasks) * 100);
-                        completion[section.key] = percentage;
-                        console.log(`✅ ${section.table}: ${percentage}% complete`);
-                    } else {
-                        console.log(`❌ ${section.table}: No tasks found for project ${projectNo}`);
-                        completion[section.key] = 0;
-                    }
-                }
-            } catch (error) {
-                console.log(`❌ ${section.table} error: ${error.message}`);
-                completion[section.key] = 0;
-            }
-        }
-
-        console.log(`🎯 Final completion for ${projectNo}:`, completion);
-        return completion;
-    } catch (error) {
-        console.error('Error in calculateCompletionPercentage:', error);
-        throw error;
-    }
-};
+// Example usage:
+// storeCompletionCounts('Project-2025-A', 'panelSlab', 0, 1);
 
 // =========================================================
 // 📂 FILE ROUTES (MANAGEMENT)
 // =========================================================
 
-// --- POST /api/projects/upload: Handle multiple file upload to BLOB ---
 router.post('/upload', upload.array('files'), async (req, res) => {
-    const { projectNo } = req.body;
+    const { projectNo, category } = req.body;
     const uploadedFiles = req.files; 
 
     if (!uploadedFiles || uploadedFiles.length === 0) {
@@ -177,19 +110,20 @@ router.post('/upload', upload.array('files'), async (req, res) => {
                 throw new Error(`Upload failed for ${file.originalname}: File buffer is empty.`);
             }
             
-            // NOTE: We only insert metadata and file_data
+            // Updated query to include category field
             const insertQuery = `
                 INSERT INTO project_files 
-                (projectNo, file_name, file_size, mime_type, file_data) 
-                VALUES (?, ?, ?, ?, ?)
-            `.trim(); // <--- FIX: Use .trim() to eliminate leading whitespace causing the SQL error
+                (projectNo, file_name, file_size, mime_type, file_data, category) 
+                VALUES (?, ?, ?, ?, ?, ?)
+            `.trim();
             
             return db.query(insertQuery, [
                 projectNo, 
                 file.originalname, 
                 file.size, 
                 file.mimetype, 
-                fileData // <-- BLOB data inserted here
+                fileData, // BLOB data
+                category || null // Add category (can be null if not provided)
             ]);
         });
 
@@ -197,19 +131,32 @@ router.post('/upload', upload.array('files'), async (req, res) => {
         
         // 3. Log the successful uploads
         const fileNames = uploadedFiles.map(f => f.originalname).join(', ');
-        // We log against the project ID since multiple files are involved
         const projectDbId = projectResult[0].id; 
+        
+        const logMessage = category 
+            ? `${uploadedFiles.length} files uploaded to ${category} category for project ${projectNo}: ${fileNames}`
+            : `${uploadedFiles.length} files uploaded for project ${projectNo}: ${fileNames}`;
         
         await logActivity(
             'UPLOAD', 
             'FILE', 
             projectDbId, 
-            `${uploadedFiles.length} files uploaded for project ${projectNo}: ${fileNames}`,
-            { projectNo: projectNo, count: uploadedFiles.length }
+            logMessage,
+            { 
+                projectNo: projectNo, 
+                count: uploadedFiles.length,
+                category: category || 'uncategorized'
+            }
         );
 
+        const responseMessage = category
+            ? `${uploadedFiles.length} files uploaded to ${category} category for project ${projectNo}.`
+            : `${uploadedFiles.length} files uploaded to database BLOBs for project ${projectNo}.`;
+
         res.status(200).json({ 
-            message: `${uploadedFiles.length} files uploaded to database BLOBs for project ${projectNo}.` 
+            message: responseMessage,
+            category: category,
+            count: uploadedFiles.length
         });
 
     } catch (err) {
@@ -438,19 +385,34 @@ router.delete('/:id', async (req, res) => {
     }
 });
 
-// --- NEW: Route to fetch file metadata (excluding BLOB data) ---
 router.get('/files/:projectNo', async (req, res) => {
     const { projectNo } = req.params;
+    const { category } = req.query;
+
     try {
-        // IMPORTANT: Never select the file_data column here unless you intend to stream the file!
-        const [files] = await db.query(
-            'SELECT id, projectNo, file_name, file_size, mime_type FROM project_files WHERE projectNo = ?', 
-            [projectNo]
-        ); 
-        res.json(files); 
+        let query = `
+            SELECT id, projectNo, file_name, file_size, mime_type, category
+            FROM project_files 
+            WHERE projectNo = ?
+        `;
+        const params = [projectNo];
+
+        // Add category filter if provided
+        if (category) {
+            query += ' AND category = ?';
+            params.push(category);
+        }
+
+        const [files] = await db.query(query, params);
+        
+        res.json(files);
+
     } catch (err) {
-        console.error('File Metadata GET Error:', err);
-        res.status(500).json({ error: 'Failed to retrieve file metadata.' });
+        console.error('Error fetching files:', err);
+        res.status(500).json({ 
+            error: 'Failed to retrieve files from database.',
+            details: err.message
+        });
     }
 });
 
