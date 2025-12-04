@@ -1,116 +1,161 @@
 const express = require('express');
 const router = express.Router();
-// Assuming the DB connection path from the original file
 const pool = require('../db/connection'); 
 
-// Helper function to format database output into camelCase (or standard frontend naming)
-const formatProject = (project) => ({
-    jobNo: project.job_no,
-    clientName: project.client_name,
-    description: project.description,
-    status: project.status, // e.g., 'In Progress', 'Completed'
-    startDate: project.start_date,
-    dueDate: project.due_date,
-    createdAt: project.created_at,
-    // Add other relevant project fields here (like total_panels, etc., but we won't update them here)
-});
+const TABLE_NAME = 'job_ledger';
 
-// =========================================================
-// GET /api/admin/projects - Fetch All Projects
-// =========================================================
+// Helper function to format database output
+const formatJob = (job) => {
+    // Convert BLOB to base64 data URL for frontend
+    let signatureData = null;
+    if (job.Signature_Data && Buffer.isBuffer(job.Signature_Data)) {
+        const base64String = job.Signature_Data.toString('base64');
+        signatureData = `data:image/png;base64,${base64String}`;
+    }
+    
+    return {
+        recordId: job.Record_ID,
+        dateEntry: job.Date_Entry,
+        jobNo: job.Job_No,
+        customerName: job.Customer_Name,
+        salesAmount: job.Sales_Amount,
+        sellPrice: job.Sell_Price,
+        cost: job.Cost,
+        margin: job.Margin,
+        approvalStatus: job.Approval_Status,
+        remarks: job.Remarks,
+        signatureData: signatureData,
+    };
+};
+
+// GET /api/admin/jobs - Fetch All Jobs
 router.get('/', async (req, res) => {
-    // Note: In an admin context, you might fetch more data or use different filtering than the user-facing API.
-    const query = 'SELECT * FROM projects ORDER BY created_at DESC';
+    const query = `SELECT * FROM ${TABLE_NAME} ORDER BY Date_Entry DESC`;
     try {
         const [results] = await pool.execute(query);
-        res.json(results.map(formatProject));
+        res.json(results.map(formatJob));
     } catch (err) {
-        console.error('Error fetching all projects for admin:', err);
-        return res.status(500).json({ error: 'Failed to fetch project list' });
+        console.error('Error fetching all jobs for admin:', err);
+        return res.status(500).json({ error: 'Failed to fetch job list' });
     }
 });
 
-// =========================================================
-// GET /api/admin/projects/:jobNo - Fetch Single Project
-// =========================================================
+// GET /api/admin/jobs/:jobNo - Fetch Single Job
 router.get('/:jobNo', async (req, res) => {
     const jobNo = req.params.jobNo;
-    const query = 'SELECT * FROM projects WHERE job_no = ?';
+    const query = `SELECT * FROM ${TABLE_NAME} WHERE Job_No = ?`;
     try {
         const [results] = await pool.execute(query, [jobNo]);
         
         if (results.length === 0) {
-            return res.status(404).json({ error: `Project with Job No ${jobNo} not found` });
+            return res.status(404).json({ error: `Job with Job No ${jobNo} not found` });
         }
         
-        res.json(formatProject(results[0]));
+        res.json(formatJob(results[0]));
     } catch (err) {
-        console.error(`Error fetching project ${jobNo}:`, err);
-        return res.status(500).json({ error: 'Failed to fetch project' });
+        console.error(`Error fetching job ${jobNo}:`, err);
+        return res.status(500).json({ error: 'Failed to fetch job' });
     }
 });
 
-
-// =========================================================
-// POST /api/admin/projects - Create New Project
-// =========================================================
+// POST /api/admin/jobs - Create New Job
 router.post('/', async (req, res) => {
-    // Expected fields for creation
-    const { job_no, client_name, description, status, start_date, due_date } = req.body;
+    const { 
+        Date_Entry, 
+        Job_No, 
+        Customer_Name, 
+        Sales_Amount, 
+        Sell_Price, 
+        Cost, 
+        Margin, 
+        Approval_Status, 
+        Remarks,
+        Signature_Data
+    } = req.body;
     
-    if (!job_no || !client_name) {
-        return res.status(400).json({ error: 'Job No and Client Name are required' });
+    // Basic validation
+    if (!Job_No || !Date_Entry || Sales_Amount === undefined || Sell_Price === undefined || Cost === undefined) {
+        return res.status(400).json({ error: 'Job_No, Date_Entry, Sales_Amount, Sell_Price, and Cost are required.' });
     }
 
     const insertSql = `
-        INSERT INTO projects (job_no, client_name, description, status, start_date, due_date)
-        VALUES (?, ?, ?, ?, ?, ?)
+        INSERT INTO ${TABLE_NAME} (
+            Date_Entry, Job_No, Customer_Name, Sales_Amount, Sell_Price, Cost, 
+            Margin, Approval_Status, Remarks, Signature_Data
+        )
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `;
     
     try {
-        // Check if project already exists
-        const [existing] = await pool.execute('SELECT job_no FROM projects WHERE job_no = ?', [job_no]);
+        // Check if job exists
+        const [existing] = await pool.execute(`SELECT Job_No FROM ${TABLE_NAME} WHERE Job_No = ?`, [Job_No]);
         if (existing.length > 0) {
-             return res.status(409).json({ error: `Project with Job No ${job_no} already exists.` });
+            return res.status(409).json({ error: `Job with Job No ${Job_No} already exists.` });
+        }
+        
+        // Convert base64 to Buffer for BLOB storage
+        let signatureBuffer = null;
+        if (Signature_Data && Signature_Data.startsWith('data:image/')) {
+            const base64Data = Signature_Data.replace(/^data:image\/\w+;base64,/, '');
+            signatureBuffer = Buffer.from(base64Data, 'base64');
         }
         
         await pool.execute(insertSql, [
-            job_no, 
-            client_name, 
-            description || null, 
-            status || 'Draft', 
-            start_date || null, 
-            due_date || null
+            Date_Entry, 
+            Job_No, 
+            Customer_Name || null, 
+            Sales_Amount, 
+            Sell_Price, 
+            Cost,
+            Margin || null, 
+            Approval_Status || 'Pending',
+            Remarks || null,
+            signatureBuffer
         ]);
 
-        // Fetch and return the newly created project
-        const [rows] = await pool.execute('SELECT * FROM projects WHERE job_no = ?', [job_no]);
-        
-        res.status(201).json(formatProject(rows[0]));
+        // Return created job
+        const [rows] = await pool.execute(`SELECT * FROM ${TABLE_NAME} WHERE Job_No = ?`, [Job_No]);
+        res.status(201).json(formatJob(rows[0]));
     } catch (err) {
-        console.error('Error creating project:', err);
-        // Handle potential SQL unique constraint violations (though checked above) or other DB errors
-        return res.status(500).json({ error: 'Failed to create project' });
+        console.error('Error creating job:', err);
+        return res.status(500).json({ error: 'Failed to create job' });
     }
 });
 
-// =========================================================
-// PUT /api/admin/projects/:jobNo - Update Project
-// =========================================================
+// PUT /api/admin/jobs/:jobNo - Update Job
 router.put('/:jobNo', async (req, res) => {
     const jobNo = req.params.jobNo;
     const updates = req.body;
     
-    // --- Dynamic UPDATE Query Construction ---
-    const allowedFields = ['client_name', 'description', 'status', 'start_date', 'due_date'];
+    // Allowed fields
+    const allowedFields = [
+        'Date_Entry', 'Customer_Name', 'Sales_Amount', 'Sell_Price', 
+        'Cost', 'Margin', 'Approval_Status', 'Remarks', 'Signature_Data'
+    ];
+    
     const fieldsToUpdate = [];
     const updateValues = [];
 
     for (const field of allowedFields) {
         if (updates[field] !== undefined) {
-            fieldsToUpdate.push(`${field} = ?`); 
-            // Treat empty strings for optional fields as NULL in the database
-            const value = (updates[field] === '') ? null : updates[field];
+            fieldsToUpdate.push(`${field} = ?`);
+            
+            let value = updates[field];
+            
+            // Handle signature BLOB conversion
+            if (field === 'Signature_Data') {
+                if (!value || value === '') {
+                    value = null;
+                } else if (value.startsWith('data:image/')) {
+                    const base64Data = value.replace(/^data:image\/\w+;base64,/, '');
+                    value = Buffer.from(base64Data, 'base64');
+                }
+            } 
+            // Handle empty strings for text fields
+            else if (typeof value === 'string' && value.trim() === '' && ['Customer_Name', 'Remarks', 'Margin'].includes(field)) {
+                value = null;
+            }
+            
             updateValues.push(value);
         }
     }
@@ -120,46 +165,40 @@ router.put('/:jobNo', async (req, res) => {
     }
 
     const setClause = fieldsToUpdate.join(', ');
-    const updateSql = `UPDATE projects SET ${setClause} WHERE job_no = ?`;
+    const updateSql = `UPDATE ${TABLE_NAME} SET ${setClause} WHERE Job_No = ?`;
     const finalBindValues = [...updateValues, jobNo];
 
     try {
         const [result] = await pool.execute(updateSql, finalBindValues);
         
         if (result.affectedRows === 0) {
-            return res.status(404).json({ error: `Project with Job No ${jobNo} not found.` });
+            return res.status(404).json({ error: `Job with Job No ${jobNo} not found.` });
         }
         
-        // Fetch and return the updated row
-        const [rows] = await pool.execute('SELECT * FROM projects WHERE job_no = ?', [jobNo]);
-        
-        res.json(formatProject(rows[0]));
+        // Return updated job
+        const [rows] = await pool.execute(`SELECT * FROM ${TABLE_NAME} WHERE Job_No = ?`, [jobNo]);
+        res.json(formatJob(rows[0]));
     } catch (err) {
-        console.error(`Error updating project ${jobNo}:`, err);
-        return res.status(500).json({ error: 'Failed to update project' });
+        console.error(`Error updating job ${jobNo}:`, err);
+        return res.status(500).json({ error: 'Failed to update job' });
     }
 });
 
-
-// =========================================================
-// DELETE /api/admin/projects/:jobNo - Delete Project
-// =========================================================
+// DELETE /api/admin/jobs/:jobNo - Delete Job
 router.delete('/:jobNo', async (req, res) => {
     const jobNo = req.params.jobNo;
     
     try {
-        // Note: You should typically delete related task entries first in a real application
-        // or configure CASCADE ON DELETE constraints in your database schema.
-        const [results] = await pool.execute('DELETE FROM projects WHERE job_no = ?', [jobNo]);
+        const [results] = await pool.execute(`DELETE FROM ${TABLE_NAME} WHERE Job_No = ?`, [jobNo]);
         
         if (results.affectedRows === 0) {
-            return res.status(404).json({ error: 'Project not found' });
+            return res.status(404).json({ error: 'Job not found' });
         }
         
-        res.status(200).json({ message: `Project ${jobNo} deleted successfully` });
+        res.status(200).json({ message: `Job ${jobNo} deleted successfully` });
     } catch (err) {
-        console.error(`Error deleting project ${jobNo}:`, err);
-        return res.status(500).json({ error: 'Failed to delete project' });
+        console.error(`Error deleting job ${jobNo}:`, err);
+        return res.status(500).json({ error: 'Failed to delete job' });
     }
 });
 

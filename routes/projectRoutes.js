@@ -268,7 +268,7 @@ VALUES (?, ?, ?, ?, ?, ?)`;
         const [newProject] = await db.query('SELECT * FROM projects WHERE id = ?', [result.insertId]);
 
         // 1. Log the project creation
-        await logActivity(
+        await logActivity( 
             'CREATE', 
             'PROJECT', 
             result.insertId, 
@@ -300,16 +300,13 @@ router.put('/:id', async (req, res) => {
 
     // Prepare query based on all fields provided (simplified query for fixed fields)
     const query = `UPDATE projects SET 
-drawingDate = ?, projectNo = ?, customer = ?, 
-poPayment = ?, requestedDelivery = ?, remarks = ?,
-panelSlab = ?, cutting = ?, door = ?, stripCurtain = ?,
-accessories = ?, system = ?
-WHERE id = ?`; 
+        drawingDate = ?, projectNo = ?, customer = ?, 
+        poPayment = ?, requestedDelivery = ?, remarks = ?
+        WHERE id = ?`; 
     
     const values = [
         updateFields.drawingDate, updateFields.projectNo, updateFields.customer, updateFields.poPayment, 
         updateFields.requestedDelivery, updateFields.remarks, 
-        updateFields.panelSlab, updateFields.cutting, updateFields.door, updateFields.stripCurtain, updateFields.accessories, updateFields.system,
         id
     ];
 

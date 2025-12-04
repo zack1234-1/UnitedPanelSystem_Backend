@@ -17,6 +17,7 @@ const cuttingTasksRouter = require('./routes/cuttingTasks');
 const stripCurtainTasksRouter = require('./routes/stripCurtainTasksRouter'); 
 const systemTasksRouter = require('./routes/systemTasksRouter');       
 const adminProjectRoutes = require('./routes/adminProjectRoutes');
+const activityLogsRouter = require('./routes/activityLogsRouter'); 
 // -------------------
 
 const app = express();
@@ -51,7 +52,8 @@ app.use('/api/cutting-tasks', cuttingTasksRouter);
 // --- NEW ROUTE REGISTRATIONS ---
 app.use('/api/strip-curtain-tasks', stripCurtainTasksRouter);
 app.use('/api/system-tasks', systemTasksRouter);
-app.use('/api/admin/projects', adminProjectRoutes); // Register the admin project routes
+app.use('/api/admin/projects', adminProjectRoutes);
+app.use('/api/activity-logs', activityLogsRouter) // Register the admin project routes
 // -----------------------------
 
 // --- Start the Server ---
