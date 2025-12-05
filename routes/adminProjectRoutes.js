@@ -58,7 +58,6 @@ router.get('/:jobNo', async (req, res) => {
     }
 });
 
-// POST /api/admin/jobs - Create New Job
 router.post('/', async (req, res) => {
     const { 
         Date_Entry, 
@@ -95,9 +94,11 @@ router.post('/', async (req, res) => {
         
         // Convert base64 to Buffer for BLOB storage
         let signatureBuffer = null;
+        let hasSignature = false;
         if (Signature_Data && Signature_Data.startsWith('data:image/')) {
             const base64Data = Signature_Data.replace(/^data:image\/\w+;base64,/, '');
             signatureBuffer = Buffer.from(base64Data, 'base64');
+            hasSignature = true;
         }
         
         await pool.execute(insertSql, [
@@ -112,6 +113,20 @@ router.post('/', async (req, res) => {
             Remarks || null,
             signatureBuffer
         ]);
+
+        // If signature exists, update project status in projects table
+        if (hasSignature) {
+            try {
+                await pool.execute(
+                    `UPDATE projects SET status = 'Approved' WHERE projectNo = ?`,
+                    [Job_No]
+                );
+                console.log(`✅ Project ${Job_No} status updated to Approved due to signature`);
+            } catch (projectErr) {
+                console.error(`Failed to update project status for ${Job_No}:`, projectErr);
+                // Don't fail the whole operation if project update fails
+            }
+        }
 
         // Return created job
         const [rows] = await pool.execute(`SELECT * FROM ${TABLE_NAME} WHERE Job_No = ?`, [Job_No]);
@@ -136,6 +151,9 @@ router.put('/:jobNo', async (req, res) => {
     const fieldsToUpdate = [];
     const updateValues = [];
 
+    // Track if signature is being added or changed
+    let hasNewSignature = false;
+
     for (const field of allowedFields) {
         if (updates[field] !== undefined) {
             fieldsToUpdate.push(`${field} = ?`);
@@ -149,6 +167,7 @@ router.put('/:jobNo', async (req, res) => {
                 } else if (value.startsWith('data:image/')) {
                     const base64Data = value.replace(/^data:image\/\w+;base64,/, '');
                     value = Buffer.from(base64Data, 'base64');
+                    hasNewSignature = true;
                 }
             } 
             // Handle empty strings for text fields
@@ -175,6 +194,20 @@ router.put('/:jobNo', async (req, res) => {
             return res.status(404).json({ error: `Job with Job No ${jobNo} not found.` });
         }
         
+        // If a new signature is provided, update project status in projects table
+        if (hasNewSignature) {
+            try {
+                await pool.execute(
+                    `UPDATE projects SET status = 'Approved' WHERE projectNo = ?`,
+                    [jobNo]
+                );
+                console.log(`✅ Project ${jobNo} status updated to Approved due to signature update`);
+            } catch (projectErr) {
+                console.error(`Failed to update project status for ${jobNo}:`, projectErr);
+                // Don't fail the whole operation if project update fails
+            }
+        }
+
         // Return updated job
         const [rows] = await pool.execute(`SELECT * FROM ${TABLE_NAME} WHERE Job_No = ?`, [jobNo]);
         res.json(formatJob(rows[0]));
@@ -184,7 +217,6 @@ router.put('/:jobNo', async (req, res) => {
     }
 });
 
-// DELETE /api/admin/jobs/:jobNo - Delete Job
 router.delete('/:jobNo', async (req, res) => {
     const jobNo = req.params.jobNo;
     
