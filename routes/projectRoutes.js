@@ -45,27 +45,18 @@ async function logActivity(activityType, resourceType, resourceId, message, deta
 // MULTER CONFIGURATION (Memory Storage for BLOBs)
 // =========================================================
 
-// CRITICAL: Use memoryStorage so the file content is available in file.buffer
 const storage = multer.memoryStorage(); 
-
-const upload = multer({ 
-    storage: storage,
-});
-// =========================================================
-
+const upload = multer({ storage: storage });
 
 // =========================================================
-// 🗑️ FILE DELETION HELPERS (Simplified for BLOBs)
+// 🗑️ FILE DELETION HELPERS
 // =========================================================
 
 /**
  * Helper to delete all file records for a project from the database.
- * No disk cleanup needed since files are BLOBs.
  * @param {string} projectNo - The project number to clean up.
  */
 async function deleteAllProjectFiles(projectNo) {
-    // NOTE: Logging this action is done in the main DELETE /api/projects/:id route.
-    // 1. Delete file records from the database
     await db.query('DELETE FROM project_files WHERE projectNo = ?', [projectNo]);
     console.log(`Cleaned up all BLOB file records for project ${projectNo}.`);
 }
@@ -74,157 +65,558 @@ async function deleteAllProjectFiles(projectNo) {
 // 📊 PROJECT COMPLETION CALCULATION
 // =========================================================
 
-// Example usage:
-// storeCompletionCounts('Project-2025-A', 'panelSlab', 0, 1);
+/**
+ * Calculate completion percentages for all task categories
+ */
+async function calculateCompletionPercentage(projectNo) {
+    try {
+        // Initialize completion object
+        const completion = {
+            panelSlab: { completed: 0, total: 0, percentage: 0 },
+            cutting: { completed: 0, total: 0, percentage: 0 },
+            door: { completed: 0, total: 0, percentage: 0 },
+            stripCurtain: { completed: 0, total: 0, percentage: 0 },
+            accessories: { completed: 0, total: 0, percentage: 0 },
+            system: { completed: 0, total: 0, percentage: 0 }
+        };
+
+        // Calculate for each task type
+        const taskTypes = [
+            { table: 'panel_tasks', key: 'panelSlab' },
+            { table: 'cutting_tasks', key: 'cutting' },
+            { table: 'door_tasks', key: 'door' },
+            { table: 'strip_curtain_tasks', key: 'stripCurtain' },
+            { table: 'accessories_tasks', key: 'accessories' },
+            { table: 'system_tasks', key: 'system' }
+        ];
+
+        for (const taskType of taskTypes) {
+            const [results] = await db.query(
+                `SELECT 
+                    COUNT(*) as total,
+                    SUM(CASE WHEN status = 'Completed' OR status = 'Done' THEN 1 ELSE 0 END) as completed
+                FROM ${taskType.table} 
+                WHERE project_no = ?`,
+                [projectNo]
+            );
+
+            if (results[0]) {
+                completion[taskType.key].total = results[0].total || 0;
+                completion[taskType.key].completed = results[0].completed || 0;
+                completion[taskType.key].percentage = results[0].total > 0 
+                    ? Math.round((results[0].completed / results[0].total) * 100) 
+                    : 0;
+            }
+        }
+
+        return completion;
+    } catch (error) {
+        console.error('Error calculating completion:', error);
+        throw error;
+    }
+}
 
 // =========================================================
 // 📂 FILE ROUTES (MANAGEMENT)
 // =========================================================
 
+// Add this route for better compatibility
+router.get('/:projectNo/files', async (req, res) => {
+    const { projectNo } = req.params;
+    const { category } = req.query;
+
+    try {
+        let query = `
+            SELECT id, projectNo, file_name, file_size, mime_type, category, taskNo
+            FROM project_files 
+            WHERE projectNo = ?
+        `;
+        const params = [projectNo];
+
+        if (category && category !== 'all') {
+            query += ' AND category = ?';
+            params.push(category);
+        }
+
+        const [files] = await db.query(query, params);
+        
+        res.json({
+            success: true,
+            count: files.length,
+            files: files
+        });
+
+    } catch (err) {
+        console.error('Error fetching files:', err); 
+        res.status(500).json({ 
+            success: false,
+            error: 'Failed to retrieve files from database.',
+            details: err.message
+        });
+    }
+});
+
+// Also update the existing /files/:projectNo route to return consistent format
+router.get('/files/:projectNo', async (req, res) => {
+    const { projectNo } = req.params;
+    const { category } = req.query;
+
+    try {
+        let query = `
+            SELECT id, projectNo, file_name, file_size, mime_type, category, taskNo
+            FROM project_files 
+            WHERE projectNo = ?
+        `;
+        const params = [projectNo];
+
+        if (category && category !== 'all') {
+            query += ' AND category = ?';
+            params.push(category);
+        }
+
+        const [files] = await db.query(query, params);
+        
+        res.json(files); // Fix: Return the array directly, not wrapped in object
+
+    } catch (err) {
+        console.error('Error fetching files:', err);
+        res.status(500).json({ 
+            success: false,
+            error: 'Failed to retrieve files from database.',
+            details: err.message
+        });
+    }
+});
+
 router.post('/upload', upload.array('files'), async (req, res) => {
     const { projectNo, category } = req.body;
-    const uploadedFiles = req.files; 
+    const uploadedFiles = req.files;
 
     if (!uploadedFiles || uploadedFiles.length === 0) {
         return res.status(400).json({ error: "No files selected for upload." });
     }
 
+    // Define the task table map for quick lookup
+    const taskTableMap = {
+        'panel': 'panel_tasks',
+        'cutting': 'cutting_tasks',
+        'door': 'door_tasks',
+        'strip_curtain': 'strip_curtain_tasks',
+        'accessories': 'accessories_tasks',
+        'system': 'system_tasks',
+        'transportation': 'transportation_tasks',
+        'quotation': 'quotation_tasks'
+    };
+
+    // Define category-specific task titles and descriptions
+    const getCategoryDetails = (cat, customer, fileName) => {
+        // Updated to use fileName in the description for better tracking
+        const baseDescription = `File '${fileName}' uploaded for projectNo ${projectNo}.`;
+        
+        const details = {
+            'panel': { title: `Panel Task: ${fileName}`, description: baseDescription },
+            'cutting': { title: `Cutting Task: ${fileName}`, description: baseDescription },
+            'door': { title: `Door Task: ${fileName}`, description: baseDescription },
+            'strip_curtain': { title: `Strip Curtain Task: ${fileName}`, description: baseDescription },
+            'accessories': { title: `Accessories Task: ${fileName}`, description: baseDescription },
+            'system': { title: `System Task: ${fileName}`, description: baseDescription },
+            'transportation': { title: `Transport Task: ${fileName}`, description: baseDescription },
+            'quotation': { title: `Quotation Task: ${fileName}`, description: baseDescription }
+        };
+        
+        return details[cat] || {
+            title: `${cat.charAt(0).toUpperCase() + cat.slice(1)} Task: ${fileName}`,
+            description: baseDescription
+        };
+    };
+
+    // Map category to the correct total column for projects table
+    const categoryToColumn = {
+        'cutting': 'total_cutting',
+        'panel': 'total_panel',
+        'door': 'total_door',
+        'strip_curtain': 'total_strip_curtain',
+        'accessories': 'total_accessories',
+        'system': 'total_system',
+        'transportation': 'total_transportation',
+        'quotation': 'total_quotation'
+    };
+
+    let tasksCreatedCount = 0;
+    let successfulUploadsCount = 0;
+    let lastTaskId = null;
+    let taskMessage = '';
+
     try {
         // 1. Basic Project existence check
-        const [projectResult] = await db.query('SELECT id FROM projects WHERE projectNo = ?', [projectNo]);
+        const [projectResult] = await db.query('SELECT id, customer FROM projects WHERE projectNo = ?', [projectNo]);
         if (projectResult.length === 0) {
             return res.status(404).json({ error: `Project No. ${projectNo} not found.` });
         }
         
-        // 2. Prepare database insertion for all uploaded files
-        const fileInsertQueries = uploadedFiles.map(file => {
-            const fileData = file.buffer; // Contains the BLOB content
-            
-            // Check if buffer is empty (due to file size limit or other error)
-            if (!fileData || fileData.length === 0) {
-                console.error(`File: ${file.originalname} has an empty buffer. Check Multer limits!`);
-                throw new Error(`Upload failed for ${file.originalname}: File buffer is empty.`);
-            }
-            
-            // Updated query to include category field
-            const insertQuery = `
-                INSERT INTO project_files 
-                (projectNo, file_name, file_size, mime_type, file_data, category) 
-                VALUES (?, ?, ?, ?, ?, ?)
-            `.trim();
-            
-            return db.query(insertQuery, [
-                projectNo, 
-                file.originalname, 
-                file.size, 
-                file.mimetype, 
-                fileData, // BLOB data
-                category || null // Add category (can be null if not provided)
-            ]);
-        });
-
-        const results = await Promise.all(fileInsertQueries);
+        const projectId = projectResult[0].id;
+        const customer = projectResult[0].customer;
         
-        // 3. Log the successful uploads
+        // 2. Process each file sequentially to link the created task ID to the project_files record
+        const taskTable = taskTableMap[category];
+        const totalColumn = categoryToColumn[category];
+
+        for (const file of uploadedFiles) {
+            try {
+                const fileData = file.buffer;
+                if (!fileData || fileData.length === 0) {
+                    console.error(`Skipping file: ${file.originalname} due to empty buffer.`);
+                    continue; // Skip to the next file
+                }
+                
+                // --- FILE INSERTION ---
+                // FIX: Use AUTO_INCREMENT properly by not specifying id in INSERT
+                const fileInsertQuery = `
+                    INSERT INTO project_files 
+                    (projectNo, file_name, file_size, mime_type, file_data, category) 
+                    VALUES (?, ?, ?, ?, ?, ?)
+                `.trim();
+                
+                const [fileResult] = await db.query(fileInsertQuery, [
+                    projectNo, 
+                    file.originalname, 
+                    file.size, 
+                    file.mimetype, 
+                    fileData,
+                    category || null
+                ]);
+                
+                const projectFileId = fileResult.insertId;
+                successfulUploadsCount++;
+
+                // --- TASK CREATION (Conditional) ---
+                let createdTaskId = null;
+
+                if (category && taskTable) {
+                    const currentDate = new Date();
+                    const dueDate = new Date(currentDate);
+                    dueDate.setDate(dueDate.getDate() + 7);
+                    
+                    const details = getCategoryDetails(category, customer, file.originalname);
+                    
+                    const taskInsertQuery = `
+                        INSERT INTO ${taskTable} 
+                        (title, description, priority, status, project_no, due_date, created_at) 
+                        VALUES (?, ?, ?, ?, ?, ?, NOW())
+                    `;
+                    
+                    const taskInsertValues = [
+                        details.title,
+                        details.description, 
+                        'medium', 
+                        'pending', 
+                        projectNo,
+                        dueDate.toISOString().split('T')[0]
+                    ];
+                    
+                    const [taskResult] = await db.query(taskInsertQuery, taskInsertValues);
+                    createdTaskId = taskResult.insertId;
+                    tasksCreatedCount++;
+                    lastTaskId = createdTaskId;
+                    
+                    // --- TASK ID LINKING (The requested FIX) ---
+                    await db.query(
+                        `UPDATE project_files SET taskNo = ? WHERE id = ?`,
+                        [createdTaskId, projectFileId]
+                    );
+                    console.log(`Linked Task ID ${createdTaskId} to File ID ${projectFileId}`);
+                }
+                
+            } catch (fileError) {
+                console.error(`Failed to process file ${file.originalname}:`, fileError);
+                // Continue with next file, but log the error
+            }
+        } // End of file loop
+
+        // 4. INCREMENT TOTAL COUNT for the WHOLE BATCH (Increment by the number of successful task creations)
+        if (totalColumn && tasksCreatedCount > 0) {
+            await db.query(
+                `UPDATE projects SET ${totalColumn} = ${totalColumn} + ? WHERE projectNo = ?`,
+                [tasksCreatedCount, projectNo]
+            );
+            console.log(`Incremented ${totalColumn} by ${tasksCreatedCount} for project ${projectNo}`);
+            taskMessage = `Successfully created and linked ${tasksCreatedCount} tasks.`;
+        }
+        
+        // 5. Log the successful uploads (Log should reflect overall success)
         const fileNames = uploadedFiles.map(f => f.originalname).join(', ');
-        const projectDbId = projectResult[0].id; 
         
         const logMessage = category 
-            ? `${uploadedFiles.length} files uploaded to ${category} category for project ${projectNo}: ${fileNames}`
-            : `${uploadedFiles.length} files uploaded for project ${projectNo}: ${fileNames}`;
+            ? `${successfulUploadsCount} file(s) uploaded to ${category} category for project ${projectNo}: ${fileNames}. ${tasksCreatedCount} task(s) created.`
+            : `${successfulUploadsCount} file(s) uploaded for project ${projectNo}: ${fileNames}`;
+        
+        const logDetails = { 
+            projectNo: projectNo,
+            customer: customer,
+            count: successfulUploadsCount,
+            category: category || 'uncategorized',
+            tasksCreated: tasksCreatedCount,
+            lastTaskId: lastTaskId
+        };
         
         await logActivity(
             'UPLOAD', 
             'FILE', 
-            projectDbId, 
+            projectId, // Log against the Project ID
             logMessage,
-            { 
-                projectNo: projectNo, 
-                count: uploadedFiles.length,
-                category: category || 'uncategorized'
-            }
+            logDetails
         );
 
-        const responseMessage = category
-            ? `${uploadedFiles.length} files uploaded to ${category} category for project ${projectNo}.`
-            : `${uploadedFiles.length} files uploaded to database BLOBs for project ${projectNo}.`;
+        // 6. Prepare response
+        if (successfulUploadsCount === 0) {
+             return res.status(500).json({ error: 'No files were successfully processed and uploaded to the database.' });
+        }
+        
+        let responseMessage = `${successfulUploadsCount} file(s) uploaded successfully to ${category || 'database'} for project ${projectNo}.`;
+        
+        if (tasksCreatedCount > 0) {
+            responseMessage += ` ${tasksCreatedCount} corresponding task(s) created and linked.`;
+        }
 
         res.status(200).json({ 
             message: responseMessage,
             category: category,
-            count: uploadedFiles.length
+            count: successfulUploadsCount,
+            tasksCreated: tasksCreatedCount,
+            taskMessage: taskMessage,
+            lastTaskId: lastTaskId
         });
 
     } catch (err) {
-        console.error('File upload database error or buffer issue:', err);
+        console.error('Critical upload process error:', err);
         res.status(500).json({ 
-            error: 'Failed to insert file data into the database BLOB column.',
+            error: 'Critical server error during upload process.',
             details: err.message
         });
     }
 });
 
-
-// --- DELETE /api/projects/file/:id: Delete a single file (BLOB FIX) ---
 router.delete('/file/:id', async (req, res) => {
     const fileId = req.params.id;
 
+    // Define maps for quick lookup (based on your previous logic)
+    const categoryToColumn = {
+        'cutting': 'total_cutting',
+        'panel': 'total_panel',
+        'door': 'total_door',
+        'strip_curtain': 'total_strip_curtain',
+        'accessories': 'total_accessories',
+        'system': 'system_tasks',
+        'transportation': 'transportation_tasks',
+        'quotation': 'quotation_tasks'
+    };
+    
+    const taskTableMap = {
+        'panel': 'panel_tasks',
+        'cutting': 'cutting_tasks',
+        'door': 'door_tasks',
+        'strip_curtain': 'strip_curtain_tasks',
+        'accessories': 'accessories_tasks',
+        'system': 'system_tasks',
+        'transportation': 'transportation_tasks',
+        'quotation': 'quotation_tasks'
+    };
+
     try {
-        // 1. Get file name and projectNo BEFORE deletion (for logging)
+        // 1. Get file details (name, projectNo, category, AND taskNo) BEFORE deletion
         const [fileInfoResult] = await db.query(
-            'SELECT file_name, projectNo FROM project_files WHERE id = ?', 
+            'SELECT file_name, projectNo, category, taskNo FROM project_files WHERE id = ?', 
             [fileId]
         );
 
         if (fileInfoResult.length === 0) {
-             // File not found, but we proceed to the main delete just in case
+            return res.status(404).json({ error: 'File not found.' });
         }
-        const fileName = fileInfoResult[0]?.file_name;
-        const projectNo = fileInfoResult[0]?.projectNo;
+        
+        // Destructure all needed properties, including taskNo
+        const { file_name: fileName, projectNo, category, taskNo } = fileInfoResult[0];
 
-        // 2. Delete the file record from the database (no disk delete needed for BLOB)
+        // 2. Delete the file record from the database
         const [deleteResult] = await db.query('DELETE FROM project_files WHERE id = ?', [fileId]);
 
         if (deleteResult.affectedRows === 0) {
+            // This should not happen if fileInfoResult was found, but keep for robustness.
             return res.status(404).json({ error: 'File record not found for deletion.' });
         }
+        
+        let taskDeleted = false;
+        let taskTableName = '';
 
-        // 3. Log the successful deletion
-        if (fileName) {
-            await logActivity(
-                'DELETE', 
-                'FILE', 
-                fileId, 
-                `Deleted file: '${fileName}' from project ${projectNo}.`,
-                { projectNo: projectNo }
-            );
+        // --- Task and Project Totals Management ---
+        if (category) {
+            const totalColumn = categoryToColumn[category];
+            taskTableName = taskTableMap[category];
+            
+            // A. Decrement the project's total file count
+            if (totalColumn) {
+                // Decrement the total by 1, ensuring it doesn't drop below 0
+                await db.query(
+                    `UPDATE projects SET ${totalColumn} = GREATEST(0, ${totalColumn} - 1) WHERE projectNo = ?`,
+                    [projectNo]
+                );
+                console.log(`Decremented ${totalColumn} file count for project ${projectNo}`);
+            }
+
+            // B. Targeted Task Deletion Logic: Delete task using the stored taskNo
+            if (taskTableName && taskNo) {
+                
+                // Delete the specific task linked to this file's taskNo (which is the task's primary key)
+                const [taskDeleteResult] = await db.query(
+                    `DELETE FROM ${taskTableName} WHERE id = ?`,
+                    [taskNo]
+                );
+
+                if (taskDeleteResult.affectedRows > 0) {
+                    taskDeleted = true;
+                    console.log(`Successfully deleted linked task (ID: ${taskNo}) from ${taskTableName}.`);
+                } else {
+                    console.log(`Warning: File was deleted, but linked task (ID: ${taskNo}) not found in ${taskTableName}.`);
+                }
+            }
+        }
+        
+        // 4. Log the successful deletion
+        await logActivity(
+            'DELETE', 
+            'FILE', 
+            fileId, 
+            `Deleted file: '${fileName}' from project ${projectNo} (Category: ${category || 'N/A'}). Linked Task ID: ${taskNo || 'N/A'}.`,
+            { projectNo: projectNo, category: category, taskDeleted: taskDeleted, taskNo: taskNo }
+        );
+
+        // 5. Prepare response
+        let responseMessage = `File deleted successfully from database. (File: ${fileName}, Category: ${category || 'N/A'})`;
+        if (taskDeleted) {
+             responseMessage += ` The corresponding task (ID: ${taskNo}) was also deleted.`;
+        } else if (taskNo) {
+             responseMessage += ` Linked Task ID ${taskNo} was provided but could not be deleted (may have been deleted previously).`;
         }
 
-        res.status(200).json({ message: 'File deleted successfully from database.' });
+        res.status(200).json({ 
+            message: responseMessage,
+            fileId: fileId,
+            taskDeleted: taskDeleted,
+            taskNo: taskNo
+        });
 
     } catch (err) {
         console.error(`Error deleting file ID ${fileId}:`, err);
         res.status(500).json({ 
-            error: 'Failed to delete file database record.',
+            error: 'Failed to complete file/task deletion process.',
             details: err.message
         });
     }
 });
 
-
 // =========================================================
-// 📋 PROJECT ROUTES (CRUD)
+// 📋 PROJECT ROUTES (CRUD) WITH STATUS SUPPORT
 // =========================================================
 
 // --- GET /api/projects: Fetch all projects ---
 router.get('/', async (req, res) => {
     try {
-        const [projects] = await db.query('SELECT * FROM projects ORDER BY id DESC'); 
-        res.json(projects); 
+        // Check if we need to add status column (for backward compatibility)
+        const [columns] = await db.query(`
+            SELECT COLUMN_NAME 
+            FROM INFORMATION_SCHEMA.COLUMNS 
+            WHERE TABLE_NAME = 'projects' AND TABLE_SCHEMA = DATABASE()
+        `);
+        
+        const hasStatusColumn = columns.some(col => col.COLUMN_NAME === 'status');
+        
+        let query = 'SELECT * FROM projects ORDER BY created_at DESC, id DESC';
+        
+        if (hasStatusColumn) {
+            query = 'SELECT *, status FROM projects ORDER BY created_at DESC, id DESC';
+        }
+        
+        const [projects] = await db.query(query);
+        
+        // Calculate completion for each project
+        const projectsWithCompletion = await Promise.all(
+            projects.map(async (project) => {
+                try {
+                    const completion = await calculateCompletionPercentage(project.projectNo);
+                    return {
+                        ...project,
+                        completion: completion
+                    };
+                } catch (error) {
+                    console.error(`Error calculating completion for project ${project.projectNo}:`, error);
+                    return {
+                        ...project,
+                        completion: {
+                            panelSlab: { completed: 0, total: 0, percentage: 0 },
+                            cutting: { completed: 0, total: 0, percentage: 0 },
+                            door: { completed: 0, total: 0, percentage: 0 },
+                            stripCurtain: { completed: 0, total: 0, percentage: 0 },
+                            accessories: { completed: 0, total: 0, percentage: 0 },
+                            system: { completed: 0, total: 0, percentage: 0 }
+                        }
+                    };
+                }
+            })
+        );
+        
+        res.json(projectsWithCompletion);
     } catch (err) {
         console.error('Database GET Error:', err);
         res.status(500).json({ 
             error: 'Failed to retrieve projects.',
+            details: err.message 
+        });
+    }
+});
+
+router.get('/status/:status', async (req, res) => {
+    const { status } = req.params;
+    
+    try {
+        // Check if status column exists
+        const [columns] = await db.query(`
+            SELECT COLUMN_NAME 
+            FROM INFORMATION_SCHEMA.COLUMNS 
+            WHERE TABLE_NAME = 'projects' AND TABLE_SCHEMA = DATABASE()
+        `);
+
+        // Get projects by status
+        let query;
+        let params = [];
+        
+        if (status === 'active') {
+            query = "SELECT * FROM projects WHERE status = 'Active' ORDER BY created_at DESC, id DESC";
+        } else if (status === 'done') {
+            query = "SELECT * FROM projects WHERE status = 'Done' ORDER BY created_at DESC, id DESC";
+        } else if (status === 'approved') {
+            query = "SELECT * FROM projects WHERE status = 'Approved' ORDER BY created_at DESC, id DESC";
+        } else {
+            // For any other status, return empty
+            return res.json([]);
+        }
+        
+        const [projects] = await db.query(query, params);
+        
+        // Calculate completion for each project
+        const projectsWithCompletion = await Promise.all(
+            projects.map(async (project) => {
+                const completion = await calculateCompletionPercentage(project.projectNo);
+                return {
+                    ...project,
+                    completion: completion
+                };
+            })
+        );
+        
+        res.json(projectsWithCompletion);
+    } catch (err) {
+        console.error('Error fetching projects by status:', err);
+        res.status(500).json({ 
+            error: 'Failed to retrieve projects by status.',
             details: err.message 
         });
     }
@@ -235,46 +627,171 @@ router.post('/', async (req, res) => {
     const { 
         drawingDate, 
         projectNo, 
+        projectName, 
         customer, 
+        salesman, 
         poPayment, 
         requestedDelivery, 
-        remarks 
+        remarks,
+        sales,
+        sell,
+        cost,
+        margin,
+        status = 'active'
     } = req.body;
+
+    console.log('Received project data:', req.body);
 
     if (!projectNo || !customer) {
         return res.status(400).json({ error: 'Project Number and Customer are required fields.' });
     }
 
-    // NOTE: This query does NOT need trimming as it starts on the same line as the backtick.
-    const query = `INSERT INTO projects 
-(drawingDate, projectNo, customer, poPayment, requestedDelivery, remarks)
-VALUES (?, ?, ?, ?, ?, ?)`; 
+    const connection = await db.getConnection();
     
-    const values = [
-        drawingDate, 
-        projectNo, 
-        customer, 
-        poPayment, 
-        requestedDelivery, 
-        remarks
-    ];
+    // Helper function to convert JavaScript keys to snake_case DB columns
+    // Handles cases like 'Job_No' -> 'job_no' and 'SalesAmount' -> 'sales_amount'
+    const toDbSnakeCase = (key) => {
+        // Replace uppercase letters (preceded by a non-underscore character) with an underscore and the lowercase letter
+        // This logic is simplified to handle your existing keys like Job_No directly if they are already snake_case
+        return key.replace(/([A-Z])/g, (match, p1) => `_${p1.toLowerCase()}`).toLowerCase();
+    };
 
     try {
-        const [result] = await db.query(query, values);
-        const [newProject] = await db.query('SELECT * FROM projects WHERE id = ?', [result.insertId]);
+        await connection.beginTransaction();
 
-        // 1. Log the project creation
+        // Check if columns exist
+        const [columns] = await connection.query(`
+            SELECT COLUMN_NAME 
+            FROM INFORMATION_SCHEMA.COLUMNS 
+            WHERE TABLE_NAME = 'projects' AND TABLE_SCHEMA = DATABASE()
+        `);
+        
+        const columnNames = columns.map(col => col.COLUMN_NAME);
+        const hasStatusColumn = columnNames.includes('status');
+        const hasProjectNameColumn = columnNames.includes('projectName');
+        const hasSalesmanColumn = columnNames.includes('salesman');
+        
+        // Build dynamic insert query based on available columns
+        let projectsColumns = ['drawingDate', 'projectNo', 'customer', 'poPayment', 'requestedDelivery', 'remarks'];
+        let projectsPlaceholders = ['?', '?', '?', '?', '?', '?'];
+        let projectsValues = [drawingDate, projectNo, customer, poPayment, requestedDelivery, remarks];
+        
+        // Add optional columns if they exist
+        if (hasProjectNameColumn) {
+            projectsColumns.push('projectName');
+            projectsPlaceholders.push('?');
+            projectsValues.push(projectName || '');
+        }
+        
+        if (hasSalesmanColumn) {
+            projectsColumns.push('salesman');
+            projectsPlaceholders.push('?');
+            projectsValues.push(salesman || '');
+        }
+        
+        if (hasStatusColumn) {
+            projectsColumns.push('status');
+            projectsPlaceholders.push('?');
+            projectsValues.push(status);
+        }
+        
+        projectsColumns.push('created_at');
+        projectsPlaceholders.push('NOW()');
+        
+        const projectsQuery = `INSERT INTO projects 
+            (${projectsColumns.join(', ')})
+            VALUES (${projectsPlaceholders.join(', ')})`;
+
+        // Insert into projects table
+        const [projectsResult] = await connection.query(projectsQuery, projectsValues);
+        const [newProject] = await connection.query('SELECT * FROM projects WHERE id = ?', [projectsResult.insertId]);
+
+        try {
+            // Check if job_ledger table exists
+            const [tables] = await connection.query(`
+                SELECT TABLE_NAME 
+                FROM INFORMATION_SCHEMA.TABLES 
+                WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'job_ledger'
+            `);
+            
+            if (tables.length > 0) {
+                // First, check if a record with this Job_No already exists
+                const [existingRecords] = await connection.query(
+                    'SELECT Job_No FROM job_ledger WHERE Job_No = ?',
+                    [projectNo]
+                );
+                
+                if (existingRecords.length === 0) {
+                    // Only insert if it doesn't already exist
+                    const [ledgerColumns] = await connection.query(`
+                        SELECT COLUMN_NAME 
+                        FROM INFORMATION_SCHEMA.COLUMNS 
+                        WHERE TABLE_NAME = 'job_ledger' AND TABLE_SCHEMA = DATABASE()
+                    `);
+                    
+                    const ledgerColumnNames = ledgerColumns.map(col => col.COLUMN_NAME);
+                    
+                    // Prepare job_ledger insert
+                    const ledgerData = {
+                        Job_No: projectNo,
+                        Customer_Name: customer,
+                        Date_Entry: drawingDate || new Date().toISOString().split('T')[0],
+                        Sales_Amount: sales || 0,
+                        Sell_Price: sell || 0,
+                        Cost: cost || 0,
+                        Margin: margin || 0,
+                        Remarks: remarks || null,
+                        Approval_status: 'Pending',
+                        Signature_Data: null,
+                    };
+
+                    console.log('Received job data:', ledgerData);
+                    
+                    const sqlColumns = Object.keys(ledgerData).join(', ');
+
+                    const placeholders = Object.keys(ledgerData).map(() => '?').join(', ');
+
+                    const ledgerValues = Object.values(ledgerData);
+
+                    const ledgerQuery = `INSERT INTO job_ledger (${sqlColumns}) VALUES (${placeholders})`;
+
+                    await connection.query(ledgerQuery, ledgerValues);
+                }
+            }
+        } catch(err) {
+            // Catch and log the inner error but proceed with commit if it's not critical
+            // In this case, we'll re-throw to trigger the rollback, as a ledger insert failure
+            // is usually treated as an overall transaction failure.
+            console.error('Job Ledger Insert Error (Rolling back transaction):', err);
+            throw err; 
+        }
+
+        // Log the project creation
         await logActivity( 
             'CREATE', 
             'PROJECT', 
-            result.insertId, 
-            `New project created: ${projectNo} for ${customer}.`,
-            { projectNo: projectNo, customer: customer }
+            projectsResult.insertId, 
+            `New project created: ${projectNo} - ${projectName || customer}.`,
+            { 
+                projectNo: projectNo,
+                projectName: projectName,
+                customer: customer,
+                salesman: salesman,
+                status: status,
+                salesData: sales || sell || cost || margin ? {
+                    sales: sales,
+                    sell: sell,
+                    cost: cost,
+                    margin: margin
+                } : null
+            }
         );
 
-        res.status(201).json(newProject[0]); 
+        await connection.commit();
+        res.status(201).json(newProject[0]);
 
     } catch (err) {
+        await connection.rollback();
         console.error('Database POST Error (Create Project):', err);
         
         if (err.code === 'ER_DUP_ENTRY') {
@@ -285,46 +802,115 @@ VALUES (?, ?, ?, ?, ?, ?)`;
             error: 'Failed to create new project in the database.',
             details: err.message 
         });
+    } finally {
+        connection.release();
     }
 });
 
+// --- PATCH /api/projects/:id/status: Update project status ---
+router.patch('/:id/status', async (req, res) => {
+    const { id } = req.params;
+    const { status} = req.body;
+
+    if (!status) {
+        return res.status(400).json({ error: 'Status is required.' });
+    }
+
+    try {
+        // Check if status column exists
+        const [columns] = await db.query(`
+            SELECT COLUMN_NAME 
+            FROM INFORMATION_SCHEMA.COLUMNS 
+            WHERE TABLE_NAME = 'projects' AND TABLE_SCHEMA = DATABASE()
+        `);
+        
+        // Update the project status
+        const updateQuery = `
+            UPDATE projects 
+            SET status = ?, 
+                status = status,
+                updated_at = NOW()
+            WHERE id = ?
+        `;
+        
+        await db.query(updateQuery, [status || null, id]);
+        
+        // Get updated project
+        const [updatedProject] = await db.query('SELECT * FROM projects WHERE id = ?', [id]);
+
+        if (updatedProject.length === 0) {
+            return res.status(404).json({ error: 'Project not found after status update attempt.' });
+        }
+        
+        // Log the status update
+        await logActivity(
+            'UPDATE', 
+            'PROJECT', 
+            id, 
+            `Project ${updatedProject[0].projectNo} status updated to ${status}.`,
+            { 
+                oldStatus: updatedProject[0].status,
+                newStatus: status,
+            }
+        );
+
+        res.status(200).json(updatedProject[0]);
+
+    } catch (err) {
+        console.error('Error updating project status:', err);
+        res.status(500).json({ 
+            error: 'Failed to update project status.',
+            details: err.message
+        });
+    }
+});
 
 // --- PUT /api/projects/:id: Update a project ---
 router.put('/:id', async (req, res) => {
     const { id } = req.params;
-    const updateFields = req.body; // Capture all fields for update query and logging
+    const updateFields = req.body;
 
-    // Prepare query based on all fields provided (simplified query for fixed fields)
-    const query = `UPDATE projects SET 
-        drawingDate = ?, projectNo = ?, customer = ?, 
-        poPayment = ?, requestedDelivery = ?, remarks = ?
-        WHERE id = ?`; 
+    // Build dynamic update query based on provided fields
+    const allowedFields = ['drawingDate', 'projectNo', 'customer', 'poPayment', 'requestedDelivery', 'remarks'];
+    const fieldsToUpdate = {};
     
-    const values = [
-        updateFields.drawingDate, updateFields.projectNo, updateFields.customer, updateFields.poPayment, 
-        updateFields.requestedDelivery, updateFields.remarks, 
-        id
-    ];
+    allowedFields.forEach(field => {
+        if (updateFields[field] !== undefined) {
+            fieldsToUpdate[field] = updateFields[field];
+        }
+    });
+
+    if (Object.keys(fieldsToUpdate).length === 0) {
+        return res.status(400).json({ error: 'No valid fields provided for update.' });
+    }
 
     try {
-        // 1. (Optional but good practice) Fetch current data before update for logging diffs
-        // We skip this for brevity and rely on the updated projectNo/customer for the log message.
+        // Get current project data for logging
+        const [currentProject] = await db.query('SELECT projectNo FROM projects WHERE id = ?', [id]);
         
+        if (currentProject.length === 0) {
+            return res.status(404).json({ error: 'Project not found.' });
+        }
+
+        // Build SET clause for query
+        const setClause = Object.keys(fieldsToUpdate)
+            .map(field => `${field} = ?`)
+            .join(', ');
+        
+        const query = `UPDATE projects SET ${setClause}, updated_at = NOW() WHERE id = ?`;
+        const values = [...Object.values(fieldsToUpdate), id];
+
         await db.query(query, values);
         
         const [updatedProject] = await db.query('SELECT * FROM projects WHERE id = ?', [id]);
 
-        if (updatedProject.length === 0) {
-            return res.status(404).json({ error: 'Project not found after update attempt.' });
-        }
-        
-        // 2. Log the project update
+        // Log the project update
         await logActivity(
             'UPDATE', 
             'PROJECT', 
             id, 
             `Project ${updatedProject[0].projectNo} updated.`,
-            { fieldsUpdated: Object.keys(updateFields) }
+            { fieldsUpdated: Object.keys(fieldsToUpdate) }
         );
 
         res.status(200).json(updatedProject[0]);
@@ -337,7 +923,6 @@ router.put('/:id', async (req, res) => {
         });
     }
 });
-
 
 // --- DELETE /api/projects/:id: Delete a project AND all associated files ---
 router.delete('/:id', async (req, res) => {
@@ -358,7 +943,7 @@ router.delete('/:id', async (req, res) => {
         // 3. Delete the project row from the main table
         await db.query('DELETE FROM projects WHERE id = ?', [id]);
         
-        // 4. Log the project deletion (and file cleanup)
+        // 4. Log the project deletion
         await logActivity(
             'DELETE', 
             'PROJECT', 
@@ -367,7 +952,7 @@ router.delete('/:id', async (req, res) => {
             { projectNo: projectNo, customer: customer }
         );
         
-        res.status(204).send(); 
+        res.status(204).send();
 
     } catch (err) {
         console.error('Error deleting project and files:', err);
@@ -378,19 +963,19 @@ router.delete('/:id', async (req, res) => {
     }
 });
 
-router.get('/files/:projectNo', async (req, res) => {
+// FIXED: This route should return an array, not an object
+router.get('/:projectNo/files', async (req, res) => {
     const { projectNo } = req.params;
     const { category } = req.query;
 
     try {
         let query = `
-            SELECT id, projectNo, file_name, file_size, mime_type, category
+            SELECT id, projectNo, file_name, file_size, mime_type, category, taskNo
             FROM project_files 
             WHERE projectNo = ?
         `;
         const params = [projectNo];
 
-        // Add category filter if provided
         if (category) {
             query += ' AND category = ?';
             params.push(category);
@@ -398,6 +983,7 @@ router.get('/files/:projectNo', async (req, res) => {
 
         const [files] = await db.query(query, params);
         
+        // FIX: Return array directly for frontend compatibility
         res.json(files);
 
     } catch (err) {
@@ -414,7 +1000,6 @@ router.get('/file/blob/:id', async (req, res) => {
     const fileId = req.params.id;
 
     try {
-        // 1. Query the BLOB data and metadata
         const [fileResult] = await db.query(
             'SELECT file_name, mime_type, file_data FROM project_files WHERE id = ?', 
             [fileId]
@@ -430,11 +1015,9 @@ router.get('/file/blob/:id', async (req, res) => {
             return res.status(404).json({ error: 'File data is empty or missing.' });
         }
 
-        // 2. Set headers and send the raw buffer
         res.setHeader('Content-Type', file.mime_type || 'application/octet-stream');
-        res.setHeader('Content-Disposition', `inline; filename="${file.file_name}"`); // 'inline' for preview, 'attachment' for download
+        res.setHeader('Content-Disposition', `inline; filename="${file.file_name}"`);
         
-        // 3. Send the BLOB data buffer
         res.send(file.file_data);
 
     } catch (err) {
@@ -445,10 +1028,6 @@ router.get('/file/blob/:id', async (req, res) => {
         });
     }
 });
-
-// =========================================================
-// 📊 PROJECT COMPLETION ROUTE
-// =========================================================
 
 // --- GET /api/projects/completion/:projectNo: Get completion percentages ---
 router.get('/completion/:projectNo', async (req, res) => {
