@@ -249,13 +249,14 @@ router.post('/upload', upload.array('files'), async (req, res) => {
 
     try {
         // 1. Basic Project existence check
-        const [projectResult] = await db.query('SELECT id, customer FROM projects WHERE projectNo = ?', [projectNo]);
+        const [projectResult] = await db.query('SELECT id, customer, status FROM projects WHERE projectNo = ?', [projectNo]);
         if (projectResult.length === 0) {
             return res.status(404).json({ error: `Project No. ${projectNo} not found.` });
         }
         
         const projectId = projectResult[0].id;
         const customer = projectResult[0].customer;
+        const projectStatus = projectResult[0].status;
         
         // 2. Process each file sequentially to link the created task ID to the project_files record
         const taskTable = taskTableMap[category];
@@ -298,20 +299,25 @@ router.post('/upload', upload.array('files'), async (req, res) => {
                     dueDate.setDate(dueDate.getDate() + 7);
                     
                     const details = getCategoryDetails(category, customer, file.originalname);
+                    let approveStatus = 'Pending';
+                    if (projectStatus === 'Approved') {
+                        approveStatus = 'Approved';
+                    }
                     
-                    const taskInsertQuery = `
+                      const taskInsertQuery = `
                         INSERT INTO ${taskTable} 
-                        (title, description, priority, status, project_no, due_date, created_at) 
-                        VALUES (?, ?, ?, ?, ?, ?, NOW())
+                        (title, description, priority, status, project_no, due_date, created_at, approve_status) 
+                        VALUES (?, ?, ?, ?, ?, ?, NOW(), ?)
                     `;
                     
                     const taskInsertValues = [
                         details.title,
                         details.description, 
-                        'medium', 
+                        'empty', 
                         'pending', 
                         projectNo,
-                        dueDate.toISOString().split('T')[0]
+                        dueDate.toISOString().split('T')[0],
+                        approveStatus
                     ];
                     
                     const [taskResult] = await db.query(taskInsertQuery, taskInsertValues);
@@ -624,20 +630,20 @@ router.get('/status/:status', async (req, res) => {
 
 // --- POST /api/projects: Create a new project ---
 router.post('/', async (req, res) => {
-    const { 
+    let { 
         drawingDate, 
-        projectNo, 
+        projectNo,
         projectName, 
         customer, 
         salesman, 
         poPayment, 
         requestedDelivery, 
-        remarks,
+        remark,
         sales,
         sell,
         cost,
         margin,
-        status = 'active'
+        status = 'active',
     } = req.body;
 
     console.log('Received project data:', req.body);
@@ -646,20 +652,15 @@ router.post('/', async (req, res) => {
         return res.status(400).json({ error: 'Project Number and Customer are required fields.' });
     }
 
+    // --- SANITIZATION: Replace / with _ ---
+    // This ensures filenames and database keys are safe for URLs and file systems
+    const safeProjectNo = projectNo.replace(/\//g, '_'); 
+
     const connection = await db.getConnection();
     
-    // Helper function to convert JavaScript keys to snake_case DB columns
-    // Handles cases like 'Job_No' -> 'job_no' and 'SalesAmount' -> 'sales_amount'
-    const toDbSnakeCase = (key) => {
-        // Replace uppercase letters (preceded by a non-underscore character) with an underscore and the lowercase letter
-        // This logic is simplified to handle your existing keys like Job_No directly if they are already snake_case
-        return key.replace(/([A-Z])/g, (match, p1) => `_${p1.toLowerCase()}`).toLowerCase();
-    };
-
     try {
         await connection.beginTransaction();
 
-        // Check if columns exist
         const [columns] = await connection.query(`
             SELECT COLUMN_NAME 
             FROM INFORMATION_SCHEMA.COLUMNS 
@@ -667,141 +668,88 @@ router.post('/', async (req, res) => {
         `);
         
         const columnNames = columns.map(col => col.COLUMN_NAME);
-        const hasStatusColumn = columnNames.includes('status');
-        const hasProjectNameColumn = columnNames.includes('projectName');
-        const hasSalesmanColumn = columnNames.includes('salesman');
         
-        // Build dynamic insert query based on available columns
-        let projectsColumns = ['drawingDate', 'projectNo', 'customer', 'poPayment', 'requestedDelivery', 'remarks'];
-        let projectsPlaceholders = ['?', '?', '?', '?', '?', '?'];
-        let projectsValues = [drawingDate, projectNo, customer, poPayment, requestedDelivery, remarks];
-        
-        // Add optional columns if they exist
-        if (hasProjectNameColumn) {
+        // Use safeProjectNo for the database entry
+        let projectsColumns = ['drawingDate', 'projectNo', 'customer', 'poPayment', 'requestedDelivery', 'remark', 'status', 'created_at'];
+        let projectsPlaceholders = ['?', '?', '?', '?', '?', '?', '?', 'NOW()'];
+        let projectsValues = [drawingDate, safeProjectNo, customer, poPayment, requestedDelivery, remark, status];
+
+        if (columnNames.includes('projectName')) {
             projectsColumns.push('projectName');
             projectsPlaceholders.push('?');
             projectsValues.push(projectName || '');
         }
         
-        if (hasSalesmanColumn) {
+        if (columnNames.includes('salesman')) {
             projectsColumns.push('salesman');
             projectsPlaceholders.push('?');
             projectsValues.push(salesman || '');
         }
-        
-        if (hasStatusColumn) {
-            projectsColumns.push('status');
-            projectsPlaceholders.push('?');
-            projectsValues.push(status);
-        }
-        
-        projectsColumns.push('created_at');
-        projectsPlaceholders.push('NOW()');
-        
+
+        const completionFields = [
+            'completed_cutting', 'completed_panel', 'completed_door', 
+            'completed_strip_curtain', 'completed_accessories', 
+            'completed_system', 'completed_transportation', 'completed_quotation'
+        ];
+
+        completionFields.forEach(field => {
+            if (columnNames.includes(field)) {
+                projectsColumns.push(field);
+                projectsPlaceholders.push('?');
+                projectsValues.push(req.body[field] || 0);
+            }
+        });
+
         const projectsQuery = `INSERT INTO projects 
             (${projectsColumns.join(', ')})
             VALUES (${projectsPlaceholders.join(', ')})`;
 
-        // Insert into projects table
         const [projectsResult] = await connection.query(projectsQuery, projectsValues);
-        const [newProject] = await connection.query('SELECT * FROM projects WHERE id = ?', [projectsResult.insertId]);
 
-        try {
-            // Check if job_ledger table exists
-            const [tables] = await connection.query(`
-                SELECT TABLE_NAME 
-                FROM INFORMATION_SCHEMA.TABLES 
-                WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'job_ledger'
-            `);
+        const [tables] = await connection.query(`
+            SELECT TABLE_NAME FROM INFORMATION_SCHEMA.TABLES 
+            WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'job_ledger'
+        `);
+        
+        if (tables.length > 0) {
+            const [existingRecords] = await connection.query(
+                'SELECT Job_No FROM job_ledger WHERE Job_No = ?',
+                [safeProjectNo]
+            );
             
-            if (tables.length > 0) {
-                // First, check if a record with this Job_No already exists
-                const [existingRecords] = await connection.query(
-                    'SELECT Job_No FROM job_ledger WHERE Job_No = ?',
-                    [projectNo]
-                );
-                
-                if (existingRecords.length === 0) {
-                    // Only insert if it doesn't already exist
-                    const [ledgerColumns] = await connection.query(`
-                        SELECT COLUMN_NAME 
-                        FROM INFORMATION_SCHEMA.COLUMNS 
-                        WHERE TABLE_NAME = 'job_ledger' AND TABLE_SCHEMA = DATABASE()
-                    `);
-                    
-                    const ledgerColumnNames = ledgerColumns.map(col => col.COLUMN_NAME);
-                    
-                    // Prepare job_ledger insert
-                    const ledgerData = {
-                        Job_No: projectNo,
-                        Customer_Name: customer,
-                        Date_Entry: drawingDate || new Date().toISOString().split('T')[0],
-                        Sales_Amount: sales || 0,
-                        Sell_Price: sell || 0,
-                        Cost: cost || 0,
-                        Margin: margin || 0,
-                        Remarks: remarks || null,
-                        Approval_status: 'Pending',
-                        Signature_Data: null,
-                    };
+            if (existingRecords.length === 0) {
+                const ledgerData = {
+                    Job_No: safeProjectNo,
+                    Customer_Name: customer,
+                    Date_Entry: drawingDate || new Date().toISOString().split('T')[0],
+                    Sales_Amount: sales || 0,
+                    Sell_Price: sell || 0,
+                    Cost: cost || 0,
+                    Margin: margin || 0,
+                    Remarks: remark || null
+                };
 
-                    console.log('Received job data:', ledgerData);
-                    
-                    const sqlColumns = Object.keys(ledgerData).join(', ');
+                const sqlColumns = Object.keys(ledgerData).join(', ');
+                const placeholders = Object.keys(ledgerData).map(() => '?').join(', ');
+                const ledgerValues = Object.values(ledgerData);
 
-                    const placeholders = Object.keys(ledgerData).map(() => '?').join(', ');
-
-                    const ledgerValues = Object.values(ledgerData);
-
-                    const ledgerQuery = `INSERT INTO job_ledger (${sqlColumns}) VALUES (${placeholders})`;
-
-                    await connection.query(ledgerQuery, ledgerValues);
-                }
+                await connection.query(`INSERT INTO job_ledger (${sqlColumns}) VALUES (${placeholders})`, ledgerValues);
             }
-        } catch(err) {
-            // Catch and log the inner error but proceed with commit if it's not critical
-            // In this case, we'll re-throw to trigger the rollback, as a ledger insert failure
-            // is usually treated as an overall transaction failure.
-            console.error('Job Ledger Insert Error (Rolling back transaction):', err);
-            throw err; 
         }
 
-        // Log the project creation
-        await logActivity( 
-            'CREATE', 
-            'PROJECT', 
-            projectsResult.insertId, 
-            `New project created: ${projectNo} - ${projectName || customer}.`,
-            { 
-                projectNo: projectNo,
-                projectName: projectName,
-                customer: customer,
-                salesman: salesman,
-                status: status,
-                salesData: sales || sell || cost || margin ? {
-                    sales: sales,
-                    sell: sell,
-                    cost: cost,
-                    margin: margin
-                } : null
-            }
-        );
-
         await connection.commit();
+        
+        const [newProject] = await connection.query('SELECT * FROM projects WHERE id = ?', [projectsResult.insertId]);
         res.status(201).json(newProject[0]);
 
     } catch (err) {
         await connection.rollback();
-        console.error('Database POST Error (Create Project):', err);
+        console.error('Database Error:', err);
         
         if (err.code === 'ER_DUP_ENTRY') {
-            return res.status(409).json({ error: `Project Number '${projectNo}' already exists.` });
+            return res.status(409).json({ error: `Project Number '${safeProjectNo}' already exists.` });
         }
-
-        res.status(500).json({ 
-            error: 'Failed to create new project in the database.',
-            details: err.message 
-        });
+        res.status(500).json({ error: 'Failed to create project.', details: err.message });
     } finally {
         connection.release();
     }
@@ -871,7 +819,7 @@ router.put('/:id', async (req, res) => {
     const updateFields = req.body;
 
     // Build dynamic update query based on provided fields
-    const allowedFields = ['drawingDate', 'projectNo', 'customer', 'poPayment', 'requestedDelivery', 'remarks'];
+    const allowedFields = ['drawingDate', 'projectNo', 'customer', 'poPayment', 'requestedDelivery', 'remark'];
     const fieldsToUpdate = {};
     
     allowedFields.forEach(field => {

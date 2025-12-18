@@ -23,14 +23,20 @@ const formatTask = (task) => ({
 // (No change needed here)
 // =========================================================
 router.get('/', async (req, res) => {
-    const query = 'SELECT * FROM door_tasks ORDER BY created_at DESC';
+    // 🚨 FIX: The string value 'Approved' must be wrapped in single quotes within the SQL query.
+    const query = `
+        SELECT * FROM door_tasks 
+        WHERE approve_status = 'Approved' 
+        ORDER BY created_at DESC
+    `;
+    
     try {
         const [results] = await pool.execute(query);
         const tasks = results.map(formatTask);
         res.json(tasks);
     } catch (err) {
-        console.error('Error fetching door tasks:', err);
-        return res.status(500).json({ error: 'Failed to fetch door tasks' });
+        console.error('Error fetching approved door tasks:', err);
+        return res.status(500).json({ error: 'Failed to fetch approved door tasks' });
     }
 });
 

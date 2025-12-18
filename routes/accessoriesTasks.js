@@ -21,13 +21,22 @@ const formatTask = (task) => ({
 // GET /api/accessories-tasks
 // =========================================================
 router.get('/', async (req, res) => {
-    const query = 'SELECT * FROM accessories_tasks ORDER BY created_at DESC';
+    // 1. Modify the query to include a WHERE clause to filter by approve_status
+    const query = `
+        SELECT * FROM accessories_tasks 
+        WHERE approve_status = 'Approved'
+        ORDER BY created_at DESC
+    `;
     try {
+        // 2. Execute the modified query
         const [results] = await pool.execute(query);
+        
+        // 3. Send the filtered and formatted results
         res.json(results.map(formatTask));
     } catch (err) {
-        console.error('Error fetching accessories tasks:', err);
-        return res.status(500).json({ error: 'Failed to fetch accessories tasks' });
+        console.error('Error fetching approved accessories tasks:', err);
+        // 4. Return a 500 status on database error
+        return res.status(500).json({ error: 'Failed to fetch approved accessories tasks' });
     }
 });
 

@@ -22,14 +22,18 @@ const formatTask = (task) => ({
 router.get('/', async (req, res) => {
     console.log('GET /api/panel-tasks called');
     
-    const query = 'SELECT * FROM panel_tasks ORDER BY created_at DESC';
+    const query = `
+        SELECT * FROM panel_tasks 
+        WHERE approve_status = 'Approved' 
+        ORDER BY created_at DESC
+    `;
     
     try {
         const [results] = await pool.execute(query);
         res.json(results.map(formatTask));
     } catch (err) {
-        console.error('Error fetching tasks:', err);
-        return res.status(500).json({ error: 'Failed to fetch tasks' });
+        console.error('Error fetching approved panel tasks:', err);
+        return res.status(500).json({ error: 'Failed to fetch approved panel tasks' });
     }
 });
 

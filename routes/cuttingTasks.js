@@ -23,16 +23,21 @@ const formatTask = (task) => ({
 // GET /api/cutting-tasks
 // =========================================================
 router.get('/', async (req, res) => {
-    const query = 'SELECT * FROM cutting_tasks ORDER BY created_at DESC';
+    // 🚨 FIX: The string value 'Approved' must be wrapped in single quotes within the SQL query.
+    const query = `
+        SELECT * FROM cutting_tasks 
+        WHERE approve_status = 'Approved' 
+        ORDER BY created_at DESC
+    `;
+    
     try {
         const [results] = await pool.execute(query);
         res.json(results.map(formatTask));
     } catch (err) {
-        console.error('Error fetching cutting tasks:', err);
-        return res.status(500).json({ error: 'Failed to fetch cutting tasks' });
+        console.error('Error fetching approved cutting tasks:', err);
+        return res.status(500).json({ error: 'Failed to fetch approved cutting tasks' });
     }
 });
-
 // =========================================================
 // POST /api/cutting-tasks - Create (Increments total_cutting)
 // =========================================================

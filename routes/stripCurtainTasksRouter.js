@@ -24,14 +24,20 @@ const formatTask = (task) => ({
 // **CHANGE: Endpoint & Table Name**
 // =========================================================
 router.get('/', async (req, res) => {
-    const query = 'SELECT * FROM strip_curtain_tasks ORDER BY created_at DESC';
+    // 🚨 FIX: The string value 'Approved' must be wrapped in single quotes within the SQL query.
+    const query = `
+        SELECT * FROM strip_curtain_tasks 
+        WHERE approve_status = 'Approved' 
+        ORDER BY created_at DESC
+    `;
+    
     try {
         const [results] = await pool.execute(query);
         const tasks = results.map(formatTask);
         res.json(tasks);
     } catch (err) {
-        console.error('Error fetching strip curtain tasks:', err);
-        return res.status(500).json({ error: 'Failed to fetch strip curtain tasks' });
+        console.error('Error fetching approved strip curtain tasks:', err);
+        return res.status(500).json({ error: 'Failed to fetch approved strip curtain tasks' });
     }
 });
 
