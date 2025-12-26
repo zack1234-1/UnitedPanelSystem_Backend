@@ -31,7 +31,7 @@ const PORT = process.env.PORT || 3000;
 
 // 1. CORS Configuration: Allows requests from your React frontend (on port 3000)
 app.use(cors({
-    origin: 'http://localhost:3000' 
+    origin: process.env.ALLOWED_ORIGINS || 'http://localhost:3000'
 }));
 
 // 2. Body Parser: Allows Express to read incoming JSON data from React POST/PUT requests
