@@ -2,7 +2,7 @@ services:
   - type: web
     name: project-backend
     runtime: node
-    region: oregon  # or: frankfurt, singapore, ohio, etc.
+    region: singapore  # or: frankfurt, singapore, ohio, etc.
     plan: free  # or: starter, standard, pro
     branch: main  # or your deployment branch
     buildCommand: yarn install
