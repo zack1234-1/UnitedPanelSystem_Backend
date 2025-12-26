@@ -6,7 +6,7 @@ services:
     plan: free  # or: starter, standard, pro
     branch: main  # or your deployment branch
     buildCommand: yarn install
-    startCommand: node index.js
+    startCommand: node server.js
     healthCheckPath: /health
     autoDeploy: true
     envVars:
