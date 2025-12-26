@@ -249,7 +249,7 @@ router.post('/upload', upload.array('files'), async (req, res) => {
 
     try {
         // 1. Basic Project existence check
-        const [projectResult] = await db.query('SELECT id, customer, status FROM projects WHERE projectNo = ?', [projectNo]);
+        const [projectResult] = await db.query('SELECT id, customer, status, requestedDelivery FROM projects WHERE projectNo = ?', [projectNo]);
         if (projectResult.length === 0) {
             return res.status(404).json({ error: `Project No. ${projectNo} not found.` });
         }
@@ -257,6 +257,7 @@ router.post('/upload', upload.array('files'), async (req, res) => {
         const projectId = projectResult[0].id;
         const customer = projectResult[0].customer;
         const projectStatus = projectResult[0].status;
+        const projectDueDate = projectResult[0].requestedDelivery;
         
         // 2. Process each file sequentially to link the created task ID to the project_files record
         const taskTable = taskTableMap[category];
@@ -293,10 +294,8 @@ router.post('/upload', upload.array('files'), async (req, res) => {
                 // --- TASK CREATION (Conditional) ---
                 let createdTaskId = null;
 
-                if (category && taskTable) {
-                    const currentDate = new Date();
-                    const dueDate = new Date(currentDate);
-                    dueDate.setDate(dueDate.getDate() + 7);
+                if (category && taskTable) 
+                {
                     
                     const details = getCategoryDetails(category, customer, file.originalname);
                     let approveStatus = 'Pending';
@@ -316,7 +315,7 @@ router.post('/upload', upload.array('files'), async (req, res) => {
                         'empty', 
                         'pending', 
                         projectNo,
-                        dueDate.toISOString().split('T')[0],
+                        projectDueDate,
                         approveStatus
                     ];
                     
