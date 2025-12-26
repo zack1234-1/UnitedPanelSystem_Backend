@@ -10,7 +10,7 @@
   "scripts": {
     "start": "node index.js",
     "dev": "nodemon index.js",
-    "build": "echo 'No build step required for Node.js backend'",
+    "build": "tsc",
     "lint": "eslint .",
     "test": "jest"
   },
