@@ -9,6 +9,7 @@
   },
  "scripts": {
   "start": "node server.js",
+  "build": "echo 'Skipping build for backend'",
   "dev": "nodemon server.js"
   },
   "dependencies": {
