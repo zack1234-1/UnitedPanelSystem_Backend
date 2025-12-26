@@ -25,7 +25,7 @@ const excelDataRouter = require('./routes/excelData');
 
 const app = express();
 // Use the port defined in .env (5000), or default to 5000
-const PORT = process.env.PORT || 5000; 
+const PORT = process.env.PORT || 3000;
 
 // --- Middleware Setup ---
 
@@ -64,6 +64,15 @@ app.use('/api', excelDataRouter)
 
 // --- Start the Server ---
 
+app.get('/health', (req, res) => {
+  res.status(200).json({ status: 'OK' });
+});
+
+app.listen(PORT, () => {
+  console.log(`Server running on port ${PORT}`);
+});
+
 app.listen(PORT, () => {
     console.log(`Project Tracker API running on http://localhost:${PORT}`);
 });
+

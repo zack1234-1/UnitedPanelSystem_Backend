@@ -9,8 +9,7 @@
   },
  "scripts": {
   "start": "node index.js",
-  "dev": "nodemon index.js",
-  "build": "echo 'No build step required' && exit 0"
+  "dev": "nodemon index.js"
   },
   "dependencies": {
     "cors": "^2.8.5",
