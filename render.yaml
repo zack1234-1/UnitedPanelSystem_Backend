@@ -1,0 +1,52 @@
+services:
+  - type: web
+    name: project-backend
+    runtime: node
+    region: oregon  # or: frankfurt, singapore, ohio, etc.
+    plan: free  # or: starter, standard, pro
+    branch: main  # or your deployment branch
+    buildCommand: yarn install
+    startCommand: node index.js
+    healthCheckPath: /health
+    autoDeploy: true
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: PORT
+        value: 10000
+    disk:
+      name: data
+      mountPath: /data
+      sizeGB: 1
+
+envVarGroups:
+  - name: database-config
+    envVars:
+      - key: DB_HOST
+        sync: false
+      - key: DB_PORT
+        value: 3306
+      - key: DB_USER
+        sync: false
+      - key: DB_PASSWORD
+        sync: false
+      - key: DB_NAME
+        sync: false
+
+  - name: app-config
+    envVars:
+      - key: JWT_SECRET
+        sync: false
+      - key: API_BASE_URL
+        value: https://project-backend.onrender.com
+      - key: ALLOWED_ORIGINS
+        value: https://your-frontend-domain.com
+
+# Database service (if using Render PostgreSQL/MySQL)
+# Uncomment and configure if you want a managed database
+# databases:
+#   - name: projectdb
+#     databaseName: projectdb
+#     user: projectuser
+#     plan: free  # or: starter, standard, pro
+#     region: oregon
