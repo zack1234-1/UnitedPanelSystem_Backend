@@ -130,6 +130,7 @@ app.use((req, res, next) => {
             '/api/cutting-tasks',
             '/api/strip-curtain-tasks',
             '/api/system-tasks',
+            '/api/projects/status/approved',
             '/api/activity-logs',
             '/api/subtasks',
             '/api/orders'
