@@ -5,25 +5,20 @@
   "main": "server.js",
   "license": "MIT",
   "engines": {
-    "node": ">=18.0.0"
+    "node": "18.x"
   },
   "scripts": {
     "start": "node server.js",
-    "build": "echo 'Building backend...'",
-    "dev": "nodemon server.js",
-    "test": "jest"
+    "build": "echo 'Backend build complete'",
+    "dev": "nodemon server.js"
   },
   "dependencies": {
     "cors": "^2.8.5",
     "dotenv": "^17.2.3",
-    "express": "^5.1.0",
-    "multer": "^2.0.2",
-    "mysql2": "^3.15.3",
-    "sharp": "^0.34.5"
+    "express": "^4.18.2",
+    "mysql2": "^3.15.3"
   },
   "devDependencies": {
-    "nodemon": "^3.1.0",
-    "eslint": "^9.2.0",
-    "jest": "^29.7.0"
+    "nodemon": "^3.1.0"
   }
 }
