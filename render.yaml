@@ -2,18 +2,16 @@ services:
   - type: web
     name: project-backend
     runtime: node
-    region: singapore  # or: frankfurt, singapore, ohio, etc.
-    plan: free  # or: starter, standard, pro
-    branch: main  # or your deployment branch
-    buildCommand: yarn install
-    startCommand: node server.js
+    region: singapore
+    plan: free
+    branch: main
+    buildCommand: npm install
+    startCommand: npm start
     healthCheckPath: /health
     autoDeploy: true
     envVars:
       - key: NODE_ENV
         value: production
-      - key: PORT
-        value: 10000
     disk:
       name: data
       mountPath: /data
@@ -42,11 +40,9 @@ envVarGroups:
       - key: ALLOWED_ORIGINS
         value: https://your-frontend-domain.com
 
-# Database service (if using Render PostgreSQL/MySQL)
-# Uncomment and configure if you want a managed database
+# Uncomment if using Render PostgreSQL
 # databases:
 #   - name: projectdb
 #     databaseName: projectdb
 #     user: projectuser
-#     plan: free  # or: starter, standard, pro
-#     region: oregon
+#     plan: free
