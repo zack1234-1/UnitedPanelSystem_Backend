@@ -31,7 +31,7 @@ function loadModule(modulePath, fallbackName) {
 }
 
 // Load routes
-projectRoutes = loadModule('./routes/projectRoutes', 'projectRoutes');
+projectRoutes = loadModule('./routes/projects', 'projectRoutes'); // Remove the "Routes" suffix
 panelTasksRoutes = loadModule('./routes/panelTasks', 'panelTasks');
 doorTasksRouter = loadModule('./routes/doorTasks', 'doorTasks');
 accessoriesTasksRouter = loadModule('./routes/accessoriesTasks', 'accessoriesTasks');
