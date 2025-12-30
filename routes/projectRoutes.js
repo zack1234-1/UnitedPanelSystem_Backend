@@ -121,6 +121,56 @@ async function calculateCompletionPercentage(projectNo) {
 // =========================================================
 
 // Add this route for better compatibility
+
+router.get('/status/:status', async (req, res) => {
+    const { status } = req.params;
+    
+    try {
+        // Check if status column exists
+        const [columns] = await db.query(`
+            SELECT COLUMN_NAME 
+            FROM INFORMATION_SCHEMA.COLUMNS 
+            WHERE TABLE_NAME = 'projects' AND TABLE_SCHEMA = DATABASE()
+        `);
+
+        // Get projects by status
+        let query;
+        let params = [];
+        
+        if (status === 'active') {
+            query = "SELECT * FROM projects WHERE status = 'Active' ORDER BY created_at DESC, id DESC";
+        } else if (status === 'done') {
+            query = "SELECT * FROM projects WHERE status = 'Done' ORDER BY created_at DESC, id DESC";
+        } else if (status === 'approved') {
+            query = "SELECT * FROM projects WHERE status = 'Approved' ORDER BY created_at DESC, id DESC";
+        } else {
+            // For any other status, return empty
+            return res.json([]);
+        }
+        
+        const [projects] = await db.query(query, params);
+        
+        // Calculate completion for each project
+        const projectsWithCompletion = await Promise.all(
+            projects.map(async (project) => {
+                const completion = await calculateCompletionPercentage(project.projectNo);
+                return {
+                    ...project,
+                    completion: completion
+                };
+            })
+        );
+        
+        res.json(projectsWithCompletion);
+    } catch (err) {
+        console.error('Error fetching projects by status:', err);
+        res.status(500).json({ 
+            error: 'Failed to retrieve projects by status.',
+            details: err.message 
+        });
+    }
+});
+
 router.get('/:projectNo/files', async (req, res) => {
     const { projectNo } = req.params;
     const { category } = req.query;
@@ -573,55 +623,6 @@ router.get('/', async (req, res) => {
         console.error('Database GET Error:', err);
         res.status(500).json({ 
             error: 'Failed to retrieve projects.',
-            details: err.message 
-        });
-    }
-});
-
-router.get('/status/:status', async (req, res) => {
-    const { status } = req.params;
-    
-    try {
-        // Check if status column exists
-        const [columns] = await db.query(`
-            SELECT COLUMN_NAME 
-            FROM INFORMATION_SCHEMA.COLUMNS 
-            WHERE TABLE_NAME = 'projects' AND TABLE_SCHEMA = DATABASE()
-        `);
-
-        // Get projects by status
-        let query;
-        let params = [];
-        
-        if (status === 'active') {
-            query = "SELECT * FROM projects WHERE status = 'Active' ORDER BY created_at DESC, id DESC";
-        } else if (status === 'done') {
-            query = "SELECT * FROM projects WHERE status = 'Done' ORDER BY created_at DESC, id DESC";
-        } else if (status === 'approved') {
-            query = "SELECT * FROM projects WHERE status = 'Approved' ORDER BY created_at DESC, id DESC";
-        } else {
-            // For any other status, return empty
-            return res.json([]);
-        }
-        
-        const [projects] = await db.query(query, params);
-        
-        // Calculate completion for each project
-        const projectsWithCompletion = await Promise.all(
-            projects.map(async (project) => {
-                const completion = await calculateCompletionPercentage(project.projectNo);
-                return {
-                    ...project,
-                    completion: completion
-                };
-            })
-        );
-        
-        res.json(projectsWithCompletion);
-    } catch (err) {
-        console.error('Error fetching projects by status:', err);
-        res.status(500).json({ 
-            error: 'Failed to retrieve projects by status.',
             details: err.message 
         });
     }
