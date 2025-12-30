@@ -912,36 +912,36 @@ router.delete('/:id', async (req, res) => {
 });
 
 // FIXED: This route should return an array, not an object
-router.get('/:projectNo/files', async (req, res) => {
-    const { projectNo } = req.params;
-    const { category } = req.query;
+// router.get('/:projectNo/files', async (req, res) => {
+//     const { projectNo } = req.params;
+//     const { category } = req.query;
 
-    try {
-        let query = `
-            SELECT id, projectNo, file_name, file_size, mime_type, category, taskNo
-            FROM project_files 
-            WHERE projectNo = ?
-        `;
-        const params = [projectNo];
+//     try {
+//         let query = `
+//             SELECT id, projectNo, file_name, file_size, mime_type, category, taskNo
+//             FROM project_files 
+//             WHERE projectNo = ?
+//         `;
+//         const params = [projectNo];
 
-        if (category) {
-            query += ' AND category = ?';
-            params.push(category);
-        }
+//         if (category) {
+//             query += ' AND category = ?';
+//             params.push(category);
+//         }
 
-        const [files] = await db.query(query, params);
+//         const [files] = await db.query(query, params);
         
-        // FIX: Return array directly for frontend compatibility
-        res.json(files);
+//         // FIX: Return array directly for frontend compatibility
+//         res.json(files);
 
-    } catch (err) {
-        console.error('Error fetching files:', err);
-        res.status(500).json({ 
-            error: 'Failed to retrieve files from database.',
-            details: err.message
-        });
-    }
-});
+//     } catch (err) {
+//         console.error('Error fetching files:', err);
+//         res.status(500).json({ 
+//             error: 'Failed to retrieve files from database.',
+//             details: err.message
+//         });
+//     }
+// });
 
 // --- GET /api/projects/file/blob/:id: Stream file BLOB data ---
 router.get('/file/blob/:id', async (req, res) => {
