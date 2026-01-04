@@ -876,72 +876,223 @@ router.put('/:id', async (req, res) => {
 router.delete('/:id', async (req, res) => {
     const { id } = req.params; 
 
+    // List of all task tables to delete from
+    const taskTables = [
+        'panel_tasks',
+        'cutting_tasks', 
+        'door_tasks',
+        'strip_curtain_tasks',
+        'accessories_tasks',
+        'system_tasks',
+        'transportation_tasks',
+        'quotation_tasks'
+    ];
+
+    // Get database connection for transaction
+    const connection = await db.getConnection();
+    
     try {
-        // 1. Get the projectNo and customer before deletion (for logging)
-        const [projectResult] = await db.query('SELECT projectNo, customer FROM projects WHERE id = ?', [id]);
-        
-        if (projectResult.length === 0) {
-            return res.status(404).json({ error: 'Project not found with that ID.' });
-        }
-        const { projectNo, customer } = projectResult[0];
+        await connection.beginTransaction();
 
-        // 2. Delete all associated file records 
-        await deleteAllProjectFiles(projectNo);
+        console.log(`🗑️ Starting deletion of project ID: ${id}`);
 
-        // 3. Delete the project row from the main table
-        await db.query('DELETE FROM projects WHERE id = ?', [id]);
-        
-        // 4. Log the project deletion
-        await logActivity(
-            'DELETE', 
-            'PROJECT', 
-            id, 
-            `Project ${projectNo} for ${customer} and all associated files deleted.`,
-            { projectNo: projectNo, customer: customer }
+        // 1. Get the project details before deletion
+        const [projectResult] = await connection.query(
+            'SELECT id, projectNo, customer FROM projects WHERE id = ?', 
+            [id]
         );
         
-        res.status(204).send();
+        if (projectResult.length === 0) {
+            await connection.rollback();
+            connection.release();
+            console.log(`❌ Project not found with ID: ${id}`);
+            return res.status(404).json({ 
+                error: 'Project not found with that ID.',
+                projectId: id 
+            });
+        }
+        
+        const { projectNo, customer } = projectResult[0];
+        
+        console.log(`📊 Project to delete: ${projectNo} (Customer: ${customer})`);
 
-    } catch (err) {
-        console.error('Error deleting project and files:', err);
-        res.status(500).json({
-            error: 'Failed to delete project, file cleanup may be incomplete.',
-            details: err.message
-        });
-    }
-});
+        // 2. Delete all associated files from project_files table
+        console.log(`🗂️ Deleting associated files for project ${projectNo}...`);
+        const [fileDeleteResult] = await connection.query(
+            'DELETE FROM project_files WHERE projectNo = ?', 
+            [projectNo]
+        );
+        console.log(`✅ Deleted ${fileDeleteResult.affectedRows} file(s) from project_files`);
 
-// FIXED: This route should return an array, not an object
-router.get('/:projectNo/files', async (req, res) => {
-    const { projectNo } = req.params;
-    const { category } = req.query;
+        // 3. Delete tasks from ALL category task tables
+        console.log(`📋 Deleting tasks from all category tables...`);
+        let totalTasksDeleted = 0;
+        
+        for (const table of taskTables) {
+            try {
+                // Check if table exists
+                const [tableExists] = await connection.query(
+                    `SELECT COUNT(*) as count FROM information_schema.tables 
+                     WHERE table_schema = DATABASE() AND table_name = ?`,
+                    [table]
+                );
+                
+                if (tableExists[0].count > 0) {
+                    const [deleteResult] = await connection.query(
+                        `DELETE FROM ${table} WHERE project_no = ?`,
+                        [projectNo]
+                    );
+                    
+                    if (deleteResult.affectedRows > 0) {
+                        console.log(`   ✅ Deleted ${deleteResult.affectedRows} task(s) from ${table}`);
+                        totalTasksDeleted += deleteResult.affectedRows;
+                    }
+                } else {
+                    console.log(`   ℹ️ Table ${table} doesn't exist, skipping`);
+                }
+            } catch (tableError) {
+                console.warn(`   ⚠️ Error deleting from ${table}:`, tableError.message);
+                // Continue with other tables even if one fails
+            }
+        }
+        
+        console.log(`✅ Total tasks deleted: ${totalTasksDeleted} from ${taskTables.length} tables`);
 
-    try {
-        let query = `
-            SELECT id, projectNo, file_name, file_size, mime_type, category, taskNo
-            FROM project_files 
-            WHERE projectNo = ?
-        `;
-        const params = [projectNo];
-
-        if (category) {
-            query += ' AND category = ?';
-            params.push(category);
+        // 4. Delete from job_ledger table if exists
+        try {
+            const [jobLedgerResult] = await connection.query(
+                'DELETE FROM job_ledger WHERE Job_No = ?',
+                [projectNo]
+            );
+            if (jobLedgerResult.affectedRows > 0) {
+                console.log(`✅ Deleted ${jobLedgerResult.affectedRows} record(s) from job_ledger`);
+            }
+        } catch (ledgerError) {
+            console.log(`ℹ️ job_ledger table doesn't exist or error: ${ledgerError.message}`);
         }
 
-        const [files] = await db.query(query, params);
+        // 5. Delete from activity_logs related to this project
+        try {
+            const [logsDeleteResult] = await connection.query(
+                'DELETE FROM activity_logs WHERE resource_id = ? AND resource_type = "PROJECT"',
+                [id]
+            );
+            if (logsDeleteResult.affectedRows > 0) {
+                console.log(`✅ Deleted ${logsDeleteResult.affectedRows} activity log(s) for project`);
+            }
+        } catch (logsError) {
+            console.log(`ℹ️ Error deleting activity logs: ${logsError.message}`);
+        }
+
+        // 6. Finally, delete the project from projects table
+        console.log(`🏗️ Deleting project from projects table...`);
+        const [projectDeleteResult] = await connection.query(
+            'DELETE FROM projects WHERE id = ?',
+            [id]
+        );
+
+        if (projectDeleteResult.affectedRows === 0) {
+            await connection.rollback();
+            connection.release();
+            console.log(`❌ Failed to delete project from projects table`);
+            return res.status(500).json({ 
+                error: 'Failed to delete project from database.',
+                projectId: id 
+            });
+        }
+
+        console.log(`✅ Successfully deleted project ${projectNo} from projects table`);
+
+        // 7. Commit the transaction
+        await connection.commit();
+        console.log(`✅ Transaction committed successfully`);
+
+        // 8. Log the project deletion (outside transaction since logging should not fail the operation)
+        try {
+            await logActivity(
+                'DELETE', 
+                'PROJECT', 
+                id, 
+                `Project ${projectNo} for ${customer} deleted with all associated files and tasks.`,
+                { 
+                    projectNo: projectNo, 
+                    customer: customer,
+                    filesDeleted: fileDeleteResult.affectedRows,
+                    tasksDeleted: totalTasksDeleted,
+                    taskTables: taskTables
+                }
+            );
+            console.log(`📝 Activity logged successfully`);
+        } catch (logError) {
+            console.warn(`⚠️ Failed to log activity:`, logError.message);
+            // Don't fail the response if logging fails
+        }
         
-        // FIX: Return array directly for frontend compatibility
-        res.json(files);
+        // 9. Prepare success response
+        const successMessage = `Project ${projectNo} (${customer}) deleted successfully. ` +
+                              `Removed ${fileDeleteResult.affectedRows} files and ${totalTasksDeleted} tasks.`;
+        
+        console.log(`🎉 ${successMessage}`);
+        
+        res.status(200).json({ 
+            success: true,
+            message: successMessage,
+            projectNo: projectNo,
+            customer: customer,
+            deletedFiles: fileDeleteResult.affectedRows,
+            deletedTasks: totalTasksDeleted,
+            taskTables: taskTables,
+            timestamp: new Date().toISOString()
+        });
 
     } catch (err) {
-        console.error('Error fetching files:', err);
-        res.status(500).json({ 
-            error: 'Failed to retrieve files from database.',
-            details: err.message
+        // 10. Rollback on any error
+        await connection.rollback();
+        console.error('❌ Error in project deletion transaction:', err);
+        
+        res.status(500).json({
+            error: 'Failed to delete project and all associated data.',
+            details: err.message,
+            projectId: id,
+            timestamp: new Date().toISOString()
         });
+    } finally {
+        // Always release the connection
+        connection.release();
+        console.log(`🔗 Database connection released`);
     }
 });
+// FIXED: This route should return an array, not an object
+// router.get('/:projectNo/files', async (req, res) => {
+//     const { projectNo } = req.params;
+//     const { category } = req.query;
+
+//     try {
+//         let query = `
+//             SELECT id, projectNo, file_name, file_size, mime_type, category, taskNo
+//             FROM project_files 
+//             WHERE projectNo = ?
+//         `;
+//         const params = [projectNo];
+
+//         if (category) {
+//             query += ' AND category = ?';
+//             params.push(category);
+//         }
+
+//         const [files] = await db.query(query, params);
+        
+//         // FIX: Return array directly for frontend compatibility
+//         res.json(files);
+
+//     } catch (err) {
+//         console.error('Error fetching files:', err);
+//         res.status(500).json({ 
+//             error: 'Failed to retrieve files from database.',
+//             details: err.message
+//         });
+//     }
+// });
 
 // --- GET /api/projects/file/blob/:id: Stream file BLOB data ---
 router.get('/file/blob/:id', async (req, res) => {
