@@ -3,11 +3,12 @@ require('dotenv').config();
 
 const express = require('express');
 const cors = require('cors');
+const path = require('path');
 
 // Import routes with error handling
 let projectRoutes, panelTasksRoutes, doorTasksRouter, accessoriesTasksRouter, cuttingTasksRouter;
 let stripCurtainTasksRouter, systemTasksRouter, adminProjectRoutes, activityLogsRouter;
-let subTasksRouter, orderRouter, excelDataRouter;
+let subTasksRouter, orderRouter, excelDataRouter, panelsRouter;
 
 // Helper function to load modules safely
 function loadModule(modulePath, fallbackName) {
@@ -43,11 +44,12 @@ activityLogsRouter = loadModule('./routes/activityLogsRouter', 'activityLogs');
 subTasksRouter = loadModule('./routes/subtasks', 'subtasks');
 orderRouter = loadModule('./routes/orders', 'orders');
 excelDataRouter = loadModule('./routes/excelData', 'excelData');
+panelsRouter = loadModule('./routes/viewPanel', 'panels'); // This should be your API routes
 
 const app = express();
 
 // Get port from environment or use default (Render free tier requires 10000-10020)
-const PORT = process.env.PORT || 10000;
+const PORT = process.env.PORT || 5000;
 
 // CORS Configuration - simplified
 app.use(cors({
@@ -88,6 +90,7 @@ app.get('/', (req, res) => {
         health: '/health',
         api_documentation: {
             projects: '/api/projects',
+            panels: '/api/panels', // API endpoint
             panelTasks: '/api/panel-tasks',
             doorTasks: '/api/door-tasks',
             accessoriesTasks: '/api/accessories-tasks',
@@ -97,12 +100,19 @@ app.get('/', (req, res) => {
             activityLogs: '/api/activity-logs',
             subtasks: '/api/subtasks',
             orders: '/api/orders'
+        },
+        views: {
+            panels: '/view-panels' // HTML view endpoint
         }
     });
 });
 
+// Serve static files (if you have any)
+app.use(express.static('public'));
+
 // API Routes
 app.use('/api/projects', projectRoutes);
+app.use('/api/panels', panelsRouter); // API endpoints at /api/panels
 app.use('/api/panel-tasks', panelTasksRoutes);
 app.use('/api/door-tasks', doorTasksRouter);
 app.use('/api/accessories-tasks', accessoriesTasksRouter);
@@ -115,7 +125,7 @@ app.use('/api/subtasks', subTasksRouter);
 app.use('/api/orders', orderRouter);
 app.use('/api', excelDataRouter);
 
-// FIXED: 404 handler - Remove the '*' parameter
+// FIXED: 404 handler
 app.use((req, res, next) => {
     res.status(404).json({
         error: 'Not Found',
@@ -123,7 +133,9 @@ app.use((req, res, next) => {
         available_endpoints: [
             '/',
             '/health',
+            '/view-panels', // Added HTML view
             '/api/projects',
+            '/api/panels',
             '/api/panel-tasks',
             '/api/door-tasks',
             '/api/accessories-tasks',
@@ -163,7 +175,6 @@ process.on('unhandledRejection', (reason, promise) => {
 // Handle uncaught exceptions
 process.on('uncaughtException', (error) => {
     console.error('Uncaught Exception:', error);
-    // In production, we might want to restart, but for Render, let it crash and restart
     process.exit(1);
 });
 
@@ -178,10 +189,13 @@ const server = app.listen(PORT, '0.0.0.0', () => {
     `);
     console.log('✅ Server is ready to accept requests');
     console.log(`✅ Health check: http://localhost:${PORT}/health`);
+    console.log(`✅ Panels API: http://localhost:${PORT}/api/panels`);
+    console.log(`✅ Panels View: http://localhost:${PORT}/view-panels`);
     
     // Log loaded modules
     console.log('\n📦 Loaded modules:');
     console.log('- projectRoutes:', projectRoutes ? '✓' : '✗');
+    console.log('- panelsRouter:', panelsRouter ? '✓' : '✗');
     console.log('- panelTasksRoutes:', panelTasksRoutes ? '✓' : '✗');
     console.log('- doorTasksRouter:', doorTasksRouter ? '✓' : '✗');
     console.log('- accessoriesTasksRouter:', accessoriesTasksRouter ? '✓' : '✗');
@@ -203,7 +217,6 @@ process.on('SIGTERM', () => {
         process.exit(0);
     });
     
-    // Force shutdown after 10 seconds
     setTimeout(() => {
         console.error('Force shutdown after timeout');
         process.exit(1);
