@@ -32,7 +32,7 @@ function loadModule(modulePath, fallbackName) {
 }
 
 // Load routes
-projectRoutes = loadModule('./routes/projects', 'projectRoutes');
+projectRoutes = loadModule('./routes/projects', 'projectRoutes'); // Remove the "Routes" suffix
 panelTasksRoutes = loadModule('./routes/panelTasks', 'panelTasks');
 doorTasksRouter = loadModule('./routes/doorTasks', 'doorTasks');
 accessoriesTasksRouter = loadModule('./routes/accessoriesTasks', 'accessoriesTasks');
@@ -142,6 +142,7 @@ app.use((req, res, next) => {
             '/api/cutting-tasks',
             '/api/strip-curtain-tasks',
             '/api/system-tasks',
+            '/api/projects/status/approved',
             '/api/activity-logs',
             '/api/subtasks',
             '/api/orders'
