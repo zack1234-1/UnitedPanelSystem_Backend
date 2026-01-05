@@ -43,7 +43,7 @@ adminProjectRoutes = loadModule('./routes/adminProjectRoutes', 'adminProjects');
 activityLogsRouter = loadModule('./routes/activityLogsRouter', 'activityLogs');
 subTasksRouter = loadModule('./routes/subtasks', 'subtasks');
 excelDataRouter = loadModule('./routes/excelData', 'excelData');
-panelsRouter = loadModule('./routes/panels', 'panelsRouter'); // This should be your API routes
+panelsRouter = loadModule('./routes/viewPanels', 'panelsRouter');
 
 const app = express();
 
