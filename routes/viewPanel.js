@@ -1,4 +1,4 @@
-// routes/viewPanel.js - UPDATED VERSION
+// routes/viewPanel.js - UPDATED WITH PROPER TRANSACTION HANDLING
 const express = require('express');
 const router = express.Router();
 const db = require('../db/connection');
@@ -27,6 +27,27 @@ const generateReferenceNumber = async () => {
     
     return `${todayPrefix}-${String(sequence).padStart(3, '0')}`;
 };
+
+// Helper function for MySQL transactions
+const executeTransaction = async (callback) => {
+    const connection = await db.getConnection();
+    
+    try {
+        await connection.beginTransaction();
+        const result = await callback(connection);
+        await connection.commit();
+        return result;
+    } catch (error) {
+        await connection.rollback();
+        throw error;
+    } finally {
+        connection.release();
+    }
+};
+
+// ============================================
+// PANEL ENDPOINTS
+// ============================================
 
 // GET /api/panels - Get all panels
 router.get('/', async (req, res) => {
@@ -83,7 +104,8 @@ router.post('/', async (req, res) => {
             balance,
             production_meter,
             brand,
-            estimated_delivery
+            estimated_delivery,
+            status = 'pending'
         } = req.body;
         
         // Basic validation
@@ -99,14 +121,17 @@ router.post('/', async (req, res) => {
             refNumber = await generateReferenceNumber();
         }
         
+        // Calculate initial balance (set to qty if not provided)
+        const initialBalance = balance !== undefined ? parseInt(balance) : (qty ? parseInt(qty) : 0);
+        
         // Insert into database
         const query = `
             INSERT INTO panels 
             (reference_number, job_no, type, panel_thk, joint, 
              surface_front, surface_back, surface_front_thk, surface_back_thk, 
              surface_type, width, length, qty, cutting, 
-             balance, production_meter, brand, estimated_delivery)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+             balance, production_meter, brand, estimated_delivery, status)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         `;
         
         const [result] = await db.execute(query, [
@@ -124,10 +149,11 @@ router.post('/', async (req, res) => {
             parseFloat(length) || 0,
             qty ? parseInt(qty) : null,
             cutting || null,
-            balance ? parseFloat(balance) : null,
+            initialBalance,
             production_meter ? parseFloat(production_meter) : null,
             brand || null,
-            estimated_delivery || null
+            estimated_delivery || null,
+            status
         ]);
         
         // Return the created panel
@@ -167,12 +193,28 @@ router.put('/:id', async (req, res) => {
             return res.status(400).json({ error: 'Width and length must be positive numbers' });
         }
         
+        // If qty is being updated, recalculate balance based on production records
+        if (updateFields.qty !== undefined) {
+            // Get current production records total
+            const [productionRecords] = await db.execute(
+                'SELECT SUM(number_of_panels) as total_produced FROM production_records WHERE panel_id = ?',
+                [id]
+            );
+            
+            const totalProduced = productionRecords[0].total_produced || 0;
+            const newQty = parseInt(updateFields.qty) || 0;
+            
+            // Calculate new balance (qty - total produced)
+            const newBalance = Math.max(0, newQty - totalProduced);
+            updateFields.balance = newBalance;
+        }
+        
         // Define allowed fields that can be updated
         const allowedFields = [
             'reference_number', 'job_no', 'type', 'panel_thk', 'joint',
             'surface_front', 'surface_back', 'surface_front_thk', 'surface_back_thk',
             'surface_type', 'width', 'length', 'qty', 'cutting',
-            'balance', 'production_meter', 'brand', 'estimated_delivery'
+            'balance', 'production_meter', 'brand', 'estimated_delivery', 'status'
         ];
         
         // Build update query dynamically
@@ -189,7 +231,7 @@ router.put('/:id', async (req, res) => {
             ];
             
             if (numericFields.includes(key)) {
-                if (key === 'qty') {
+                if (key === 'qty' || key === 'balance') {
                     fields.push(`${key} = ?`);
                     values.push(value ? parseInt(value) : null);
                 } else {
@@ -235,16 +277,27 @@ router.delete('/:id', async (req, res) => {
     try {
         const { id } = req.params;
         
-        const [result] = await db.execute('DELETE FROM panels WHERE id = ?', [id]);
+        const result = await executeTransaction(async (connection) => {
+            // Delete production records first (foreign key constraint)
+            await connection.execute('DELETE FROM production_records WHERE panel_id = ?', [id]);
+            
+            // Delete panel
+            const [deleteResult] = await connection.execute('DELETE FROM panels WHERE id = ?', [id]);
+            
+            if (deleteResult.affectedRows === 0) {
+                throw new Error('Panel not found');
+            }
+            
+            return { message: 'Panel deleted successfully' };
+        });
         
-        if (result.affectedRows === 0) {
-            return res.status(404).json({ error: 'Panel not found' });
-        }
-        
-        res.json({ message: 'Panel deleted successfully' });
+        res.json(result);
         
     } catch (error) {
         console.error('Error deleting panel:', error);
+        if (error.message === 'Panel not found') {
+            return res.status(404).json({ error: 'Panel not found' });
+        }
         res.status(500).json({ 
             error: 'Failed to delete panel',
             details: error.message 
@@ -253,7 +306,7 @@ router.delete('/:id', async (req, res) => {
 });
 
 // ============================================
-// PRODUCTION RECORDS ENDPOINTS - UPDATED
+// PRODUCTION RECORDS ENDPOINTS
 // ============================================
 
 // GET /api/panels/:panelId/production-records - Get all production records for a panel
@@ -289,7 +342,9 @@ router.post('/:panelId/production-records', async (req, res) => {
         const {
             date,
             number_of_panels,
-            notes
+            notes,
+            delivery_date,
+            reference_number
         } = req.body;
         
         // Validate required fields
@@ -303,7 +358,7 @@ router.post('/:panelId/production-records', async (req, res) => {
         
         // Check if panel exists and get panel details
         const [panel] = await db.execute(
-            'SELECT id, reference_number, job_no, brand, estimated_delivery FROM panels WHERE id = ?',
+            'SELECT id, job_no, brand, estimated_delivery FROM panels WHERE id = ?',
             [panelId]
         );
         
@@ -317,17 +372,18 @@ router.post('/:panelId/production-records', async (req, res) => {
         const query = `
             INSERT INTO production_records 
             (panel_id, reference_number, job_no, brand, estimated_delivery, 
-             date, number_of_panels, notes)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+             date, delivery_date, number_of_panels, notes)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
         `;
         
         const [result] = await db.execute(query, [
             panelId,
-            panelData.reference_number || null,
+            reference_number || null,
             panelData.job_no || null,
             panelData.brand || null,
             panelData.estimated_delivery || null,
             date,
+            delivery_date || date,
             parseInt(number_of_panels) || 1,
             notes || null
         ]);
@@ -344,6 +400,149 @@ router.post('/:panelId/production-records', async (req, res) => {
         console.error('Error creating production record:', error);
         res.status(500).json({ 
             error: 'Failed to create production record',
+            details: error.message 
+        });
+    }
+});
+
+// POST /api/panels/:panelId/production-with-balance - Create production record with balance update
+router.post('/:panelId/production-with-balance', async (req, res) => {
+    try {
+        const { panelId } = req.params;
+        const {
+            date,
+            number_of_panels,
+            notes,
+            delivery_date,
+            reference_number
+        } = req.body;
+        
+        // Validate required fields
+        if (!date) {
+            return res.status(400).json({ error: 'Date is required' });
+        }
+        
+        if (!number_of_panels || number_of_panels < 1) {
+            return res.status(400).json({ error: 'Number of panels must be at least 1' });
+        }
+        
+        const panelsToProduce = parseInt(number_of_panels);
+        
+        const result = await executeTransaction(async (connection) => {
+            // Check if panel exists and get current balance
+            const [panel] = await connection.execute(
+                'SELECT id, balance, qty, job_no, brand, estimated_delivery, reference_number FROM panels WHERE id = ?',
+                [panelId]
+            );
+            
+            if (panel.length === 0) {
+                throw new Error('Panel not found');
+            }
+            
+            const panelData = panel[0];
+            const currentBalance = panelData.balance || panelData.qty || 0;
+            
+            // Check if enough balance is available
+            if (panelsToProduce > currentBalance) {
+                throw new Error(`Cannot produce ${panelsToProduce} panels. Only ${currentBalance} available.`);
+            }
+            
+            // Calculate new balance
+            const newBalance = currentBalance - panelsToProduce;
+            
+            // Update panel balance
+            await connection.execute(
+                'UPDATE panels SET balance = ?, updated_at = NOW() WHERE id = ?',
+                [newBalance, panelId]
+            );
+            
+            // Insert production record with balance_after field
+            const query = `
+                INSERT INTO production_records 
+                (panel_id, reference_number, job_no, brand, estimated_delivery, 
+                 date, delivery_date, number_of_panels, notes, balance_after)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            `;
+            
+            const [insertResult] = await connection.execute(query, [
+                panelId,
+                reference_number || panelData.reference_number,
+                panelData.job_no || null,
+                panelData.brand || null,
+                panelData.estimated_delivery || null,
+                date,
+                delivery_date || date,
+                panelsToProduce,
+                notes || null,
+                newBalance
+            ]);
+            
+            // Get the created record
+            const [record] = await connection.execute(
+                'SELECT * FROM production_records WHERE id = ?',
+                [insertResult.insertId]
+            );
+            
+            return {
+                production_record: record[0],
+                updated_balance: newBalance
+            };
+        });
+        
+        res.status(201).json(result);
+        
+    } catch (error) {
+        console.error('Error creating production record with balance update:', error);
+        if (error.message.includes('Cannot produce')) {
+            return res.status(400).json({ error: error.message });
+        }
+        if (error.message === 'Panel not found') {
+            return res.status(404).json({ error: 'Panel not found' });
+        }
+        res.status(500).json({ 
+            error: 'Failed to create production record',
+            details: error.message 
+        });
+    }
+});
+
+// In your backend (Node.js example)
+// Add this route to your viewPanel.js or main routes file
+router.patch('/production-records/:id/status', async (req, res) => {
+    try {
+        const { id } = req.params;
+        const { status } = req.body;
+        
+        if (!status) {
+            return res.status(400).json({ error: 'Status is required' });
+        }
+        
+        // Allowed status values
+        const allowedStatuses = ['pending', 'in_progress', 'completed', 'cancelled', 'on_hold'];
+        if (!allowedStatuses.includes(status)) {
+            return res.status(400).json({ error: 'Invalid status value' });
+        }
+        
+        const [result] = await db.execute(
+            'UPDATE production_records SET status = ?, updated_at = NOW() WHERE id = ?',
+            [status, id]
+        );
+        
+        if (result.affectedRows === 0) {
+            return res.status(404).json({ error: 'Production record not found' });
+        }
+        
+        const [updatedRecord] = await db.execute(
+            'SELECT * FROM production_records WHERE id = ?',
+            [id]
+        );
+        
+        res.json(updatedRecord[0]);
+        
+    } catch (error) {
+        console.error('Error updating production record status:', error);
+        res.status(500).json({ 
+            error: 'Failed to update production record status',
             details: error.message 
         });
     }
@@ -380,7 +579,7 @@ router.put('/:panelId/production-records/:recordId', async (req, res) => {
         const fields = [];
         const values = [];
         
-        const allowedFields = ['date', 'number_of_panels', 'notes'];
+        const allowedFields = ['date', 'number_of_panels', 'notes', 'delivery_date'];
         
         for (const [key, value] of Object.entries(updateFields)) {
             if (!allowedFields.includes(key)) continue;
@@ -434,27 +633,314 @@ router.delete('/:panelId/production-records/:recordId', async (req, res) => {
     try {
         const { panelId, recordId } = req.params;
         
-        // Check if panel exists
-        const [panel] = await db.execute('SELECT id FROM panels WHERE id = ?', [panelId]);
+        const result = await executeTransaction(async (connection) => {
+            // Check if panel exists
+            const [panel] = await connection.execute(
+                'SELECT id, balance FROM panels WHERE id = ?',
+                [panelId]
+            );
+            
+            if (panel.length === 0) {
+                throw new Error('Panel not found');
+            }
+            
+            // Get production record to delete
+            const [record] = await connection.execute(
+                'SELECT * FROM production_records WHERE id = ? AND panel_id = ?',
+                [recordId, panelId]
+            );
+            
+            if (record.length === 0) {
+                throw new Error('Production record not found');
+            }
+            
+            const recordData = record[0];
+            const panelsToRestore = recordData.number_of_panels || 0;
+            const currentBalance = panel[0].balance || 0;
+            
+            // Calculate new balance
+            const newBalance = currentBalance + panelsToRestore;
+            
+            // Update panel balance
+            await connection.execute(
+                'UPDATE panels SET balance = ?, updated_at = NOW() WHERE id = ?',
+                [newBalance, panelId]
+            );
+            
+            // Delete production record
+            await connection.execute(
+                'DELETE FROM production_records WHERE id = ? AND panel_id = ?',
+                [recordId, panelId]
+            );
+            
+            return {
+                success: true,
+                restored_panels: panelsToRestore,
+                updated_balance: newBalance,
+                message: 'Production record deleted and balance restored'
+            };
+        });
+        
+        res.json(result);
+        
+    } catch (error) {
+        console.error('Error deleting production record:', error);
+        if (error.message === 'Panel not found' || error.message === 'Production record not found') {
+            return res.status(404).json({ error: error.message });
+        }
+        res.status(500).json({ 
+            error: 'Failed to delete production record',
+            details: error.message 
+        });
+    }
+});
+
+// DELETE /api/panels/:panelId/production/:recordId/with-balance - Delete production record and restore balance
+router.delete('/:panelId/production/:recordId/with-balance', async (req, res) => {
+    try {
+        const { panelId, recordId } = req.params;
+        
+        const result = await executeTransaction(async (connection) => {
+            // Check if panel exists
+            const [panel] = await connection.execute(
+                'SELECT id, balance FROM panels WHERE id = ?',
+                [panelId]
+            );
+            
+            if (panel.length === 0) {
+                throw new Error('Panel not found');
+            }
+            
+            // Get production record to delete
+            const [record] = await connection.execute(
+                'SELECT * FROM production_records WHERE id = ? AND panel_id = ?',
+                [recordId, panelId]
+            );
+            
+            if (record.length === 0) {
+                throw new Error('Production record not found');
+            }
+            
+            const recordData = record[0];
+            const panelsToRestore = recordData.number_of_panels || 0;
+            const currentBalance = panel[0].balance || 0;
+            
+            // Calculate new balance
+            const newBalance = currentBalance + panelsToRestore;
+            
+            // Update panel balance
+            await connection.execute(
+                'UPDATE panels SET balance = ?, updated_at = NOW() WHERE id = ?',
+                [newBalance, panelId]
+            );
+            
+            // Delete production record
+            await connection.execute(
+                'DELETE FROM production_records WHERE id = ? AND panel_id = ?',
+                [recordId, panelId]
+            );
+            
+            return {
+                success: true,
+                restored_panels: panelsToRestore,
+                updated_balance: newBalance,
+                message: 'Production record deleted and balance restored'
+            };
+        });
+        
+        res.json(result);
+        
+    } catch (error) {
+        console.error('Error deleting production record with balance restoration:', error);
+        if (error.message === 'Panel not found' || error.message === 'Production record not found') {
+            return res.status(404).json({ error: error.message });
+        }
+        res.status(500).json({ 
+            error: 'Failed to delete production record',
+            details: error.message 
+        });
+    }
+});
+
+// ============================================
+// BALANCE AND STATISTICS ENDPOINTS
+// ============================================
+
+// GET /api/panels/:panelId/production-summary - Get production summary including current balance
+router.get('/:panelId/production-summary', async (req, res) => {
+    try {
+        const { panelId } = req.params;
+        
+        // Check if panel exists and get details
+        const [panel] = await db.execute(
+            'SELECT id, qty, balance, production_meter, status FROM panels WHERE id = ?',
+            [panelId]
+        );
+        
         if (panel.length === 0) {
             return res.status(404).json({ error: 'Panel not found' });
         }
         
-        const [result] = await db.execute(
-            'DELETE FROM production_records WHERE id = ? AND panel_id = ?',
-            [recordId, panelId]
+        const panelData = panel[0];
+        
+        // Get production records count and total produced
+        const [productionStats] = await db.execute(
+            'SELECT COUNT(*) as total_records, SUM(number_of_panels) as total_produced FROM production_records WHERE panel_id = ?',
+            [panelId]
         );
         
-        if (result.affectedRows === 0) {
-            return res.status(404).json({ error: 'Production record not found' });
-        }
+        const stats = productionStats[0];
+        const totalProduced = stats.total_produced || 0;
+        const panelQty = panelData.qty || 0;
+        const currentBalance = panelData.balance || panelQty;
+        const progressPercentage = panelQty > 0 ? 
+            Math.min((totalProduced / panelQty) * 100, 100) : 0;
         
-        res.json({ message: 'Production record deleted successfully' });
+        res.json({
+            panel_id: panelId,
+            total_quantity: panelQty,
+            total_produced: totalProduced,
+            current_balance: currentBalance,
+            production_records_count: stats.total_records || 0,
+            progress_percentage: progressPercentage,
+            production_meter: panelData.production_meter || 0,
+            status: panelData.status || 'pending'
+        });
         
     } catch (error) {
-        console.error('Error deleting production record:', error);
+        console.error('Error fetching production summary:', error);
         res.status(500).json({ 
-            error: 'Failed to delete production record',
+            error: 'Failed to fetch production summary',
+            details: error.message 
+        });
+    }
+});
+
+// PUT /api/panels/:id/balance - Update panel balance directly
+router.put('/:id/balance', async (req, res) => {
+    try {
+        const { id } = req.params;
+        const { balance } = req.body;
+        
+        if (balance === undefined || balance === null) {
+            return res.status(400).json({ error: 'Balance is required' });
+        }
+        
+        // Check if panel exists
+        const [panel] = await db.execute('SELECT id FROM panels WHERE id = ?', [id]);
+        if (panel.length === 0) {
+            return res.status(404).json({ error: 'Panel not found' });
+        }
+        
+        await db.execute(
+            'UPDATE panels SET balance = ?, updated_at = NOW() WHERE id = ?',
+            [parseInt(balance), id]
+        );
+        
+        const [updatedPanel] = await db.execute(
+            'SELECT id, balance, qty FROM panels WHERE id = ?',
+            [id]
+        );
+        
+        res.json({
+            success: true,
+            panel_id: id,
+            updated_balance: updatedPanel[0].balance,
+            total_quantity: updatedPanel[0].qty
+        });
+        
+    } catch (error) {
+        console.error('Error updating panel balance:', error);
+        res.status(500).json({ 
+            error: 'Failed to update panel balance',
+            details: error.message 
+        });
+    }
+});
+
+// GET /api/panels/:id/balance-history - Get balance history from production records
+router.get('/:id/balance-history', async (req, res) => {
+    try {
+        const { id } = req.params;
+        
+        // Check if panel exists
+        const [panel] = await db.execute('SELECT id FROM panels WHERE id = ?', [id]);
+        if (panel.length === 0) {
+            return res.status(404).json({ error: 'Panel not found' });
+        }
+        
+        // Get production records with balance_after field
+        const [records] = await db.execute(
+            `SELECT pr.*, p.balance as current_balance 
+             FROM production_records pr 
+             LEFT JOIN panels p ON pr.panel_id = p.id 
+             WHERE pr.panel_id = ? 
+             ORDER BY pr.date DESC, pr.created_at DESC`,
+            [id]
+        );
+        
+        res.json(records);
+        
+    } catch (error) {
+        console.error('Error fetching balance history:', error);
+        res.status(500).json({ 
+            error: 'Failed to fetch balance history',
+            details: error.message 
+        });
+    }
+});
+
+// GET /api/panels/stats/summary - Get overall statistics
+router.get('/stats/summary', async (req, res) => {
+    try {
+        // Get total panels count
+        const [totalPanels] = await db.execute('SELECT COUNT(*) as count FROM panels');
+        
+        // Get total quantity
+        const [totalQty] = await db.execute('SELECT SUM(qty) as total FROM panels');
+        
+        // Get total produced (sum of all production records)
+        const [totalProduced] = await db.execute('SELECT SUM(number_of_panels) as total FROM production_records');
+        
+        // Get total balance
+        const [totalBalance] = await db.execute('SELECT SUM(balance) as total FROM panels');
+        
+        // Get total production meter
+        const [totalProductionMeter] = await db.execute('SELECT SUM(production_meter) as total FROM panels');
+        
+        // Get balance statistics
+        const [balanceStats] = await db.execute(`
+            SELECT 
+                COUNT(CASE WHEN balance > 0 THEN 1 END) as positive,
+                COUNT(CASE WHEN balance = 0 THEN 1 END) as zero,
+                COUNT(CASE WHEN balance < 0 THEN 1 END) as negative,
+                COUNT(CASE WHEN balance <= qty * 0.1 AND balance > 0 THEN 1 END) as low
+            FROM panels
+        `);
+        
+        // Get status statistics
+        const [statusStats] = await db.execute(`
+            SELECT 
+                COUNT(CASE WHEN status = 'pending' THEN 1 END) as pending,
+                COUNT(CASE WHEN status = 'in_progress' THEN 1 END) as in_progress,
+                COUNT(CASE WHEN status = 'completed' THEN 1 END) as completed
+            FROM panels
+        `);
+        
+        res.json({
+            total_panels: totalPanels[0].count || 0,
+            total_quantity: totalQty[0].total || 0,
+            total_produced: totalProduced[0].total || 0,
+            total_balance: totalBalance[0].total || 0,
+            total_production_meter: totalProductionMeter[0].total || 0,
+            balance_statistics: balanceStats[0],
+            status_statistics: statusStats[0]
+        });
+        
+    } catch (error) {
+        console.error('Error fetching statistics:', error);
+        res.status(500).json({ 
+            error: 'Failed to fetch statistics',
             details: error.message 
         });
     }
