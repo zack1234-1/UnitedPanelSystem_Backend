@@ -43,7 +43,7 @@ adminProjectRoutes = loadModule('./routes/adminProjectRoutes', 'adminProjects');
 activityLogsRouter = loadModule('./routes/activityLogsRouter', 'activityLogs');
 subTasksRouter = loadModule('./routes/subtasks', 'subtasks');
 excelDataRouter = loadModule('./routes/excelData', 'excelData');
-panelsRouter = loadModule('./routes/viewPanels', 'panelsRouter');
+panelsRouter = loadModule('./routes/viewPanel', 'panelsRouter');
 
 const app = express();
 
