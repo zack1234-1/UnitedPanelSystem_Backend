@@ -105,6 +105,8 @@ router.post('/', async (req, res) => {
             production_meter,
             brand,
             estimated_delivery,
+            salesman,
+            notes,
             status = 'pending'
         } = req.body;
         
@@ -124,14 +126,15 @@ router.post('/', async (req, res) => {
         // Calculate initial balance (set to qty if not provided)
         const initialBalance = balance !== undefined ? parseInt(balance) : (qty ? parseInt(qty) : 0);
         
-        // Insert into database
+        // Insert into database with new fields
         const query = `
             INSERT INTO panels 
             (reference_number, job_no, type, panel_thk, joint, 
              surface_front, surface_back, surface_front_thk, surface_back_thk, 
              surface_type, width, length, qty, cutting, 
-             balance, production_meter, brand, estimated_delivery, status)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+             balance, production_meter, brand, estimated_delivery, 
+             salesman, notes, status)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         `;
         
         const [result] = await db.execute(query, [
@@ -153,6 +156,8 @@ router.post('/', async (req, res) => {
             production_meter ? parseFloat(production_meter) : null,
             brand || null,
             estimated_delivery || null,
+            salesman || null,  // New field
+            notes || null,     // New field
             status
         ]);
         
@@ -209,12 +214,13 @@ router.put('/:id', async (req, res) => {
             updateFields.balance = newBalance;
         }
         
-        // Define allowed fields that can be updated
+        // Define allowed fields that can be updated (added salesman and notes)
         const allowedFields = [
             'reference_number', 'job_no', 'type', 'panel_thk', 'joint',
             'surface_front', 'surface_back', 'surface_front_thk', 'surface_back_thk',
             'surface_type', 'width', 'length', 'qty', 'cutting',
-            'balance', 'production_meter', 'brand', 'estimated_delivery', 'status'
+            'balance', 'production_meter', 'brand', 'estimated_delivery',
+            'salesman', 'notes', 'status'  // Added salesman and notes
         ];
         
         // Build update query dynamically
