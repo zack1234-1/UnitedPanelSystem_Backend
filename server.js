@@ -8,7 +8,7 @@ const path = require('path');
 // Import routes with error handling
 let projectRoutes, panelTasksRoutes, doorTasksRouter, accessoriesTasksRouter, cuttingTasksRouter;
 let stripCurtainTasksRouter, systemTasksRouter, adminProjectRoutes, activityLogsRouter;
-let subTasksRouter, orderRouter, excelDataRouter, panelsRouter;
+let subTasksRouter, excelDataRouter, panelsRouter;
 
 // Helper function to load modules safely
 function loadModule(modulePath, fallbackName) {
@@ -42,9 +42,8 @@ systemTasksRouter = loadModule('./routes/systemTasksRouter', 'systemTasks');
 adminProjectRoutes = loadModule('./routes/adminProjectRoutes', 'adminProjects');
 activityLogsRouter = loadModule('./routes/activityLogsRouter', 'activityLogs');
 subTasksRouter = loadModule('./routes/subtasks', 'subtasks');
-orderRouter = loadModule('./routes/orders', 'orders');
 excelDataRouter = loadModule('./routes/excelData', 'excelData');
-panelsRouter = loadModule('./routes/viewPanel', 'panels'); // This should be your API routes
+panelsRouter = loadModule('./routes/panels', 'panelsRouter'); // This should be your API routes
 
 const app = express();
 
@@ -99,7 +98,6 @@ app.get('/', (req, res) => {
             systemTasks: '/api/system-tasks',
             activityLogs: '/api/activity-logs',
             subtasks: '/api/subtasks',
-            orders: '/api/orders'
         },
         views: {
             panels: '/view-panels' // HTML view endpoint
@@ -122,7 +120,6 @@ app.use('/api/system-tasks', systemTasksRouter);
 app.use('/api/admin/projects', adminProjectRoutes);
 app.use('/api/activity-logs', activityLogsRouter);
 app.use('/api/subtasks', subTasksRouter);
-app.use('/api/orders', orderRouter);
 app.use('/api', excelDataRouter);
 
 // FIXED: 404 handler
@@ -145,7 +142,6 @@ app.use((req, res, next) => {
             '/api/projects/status/approved',
             '/api/activity-logs',
             '/api/subtasks',
-            '/api/orders'
         ]
     });
 });
@@ -205,7 +201,6 @@ const server = app.listen(PORT, '0.0.0.0', () => {
     console.log('- adminProjectRoutes:', adminProjectRoutes ? '✓' : '✗');
     console.log('- activityLogsRouter:', activityLogsRouter ? '✓' : '✗');
     console.log('- subTasksRouter:', subTasksRouter ? '✓' : '✗');
-    console.log('- orderRouter:', orderRouter ? '✓' : '✗');
     console.log('- excelDataRouter:', excelDataRouter ? '✓' : '✗');
 });
 
