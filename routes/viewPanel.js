@@ -1,4 +1,3 @@
-// routes/viewPanel.js - UPDATED WITH PROPER TRANSACTION HANDLING
 const express = require('express');
 const router = express.Router();
 const db = require('../db/connection');
@@ -156,8 +155,8 @@ router.post('/', async (req, res) => {
             production_meter ? parseFloat(production_meter) : null,
             brand || null,
             estimated_delivery || null,
-            salesman || null,  // New field
-            notes || null,     // New field
+            salesman || null,
+            notes || null,
             status
         ]);
         
@@ -173,6 +172,89 @@ router.post('/', async (req, res) => {
         console.error('Error creating panel:', error);
         res.status(500).json({ 
             error: 'Failed to create panel',
+            details: error.message 
+        });
+    }
+});
+
+// POST /api/panels/:id/duplicate - Duplicate a panel
+router.post('/:id/duplicate', async (req, res) => {
+    try {
+        const { id } = req.params;
+        
+        // Get the panel to duplicate
+        const [panel] = await db.execute('SELECT * FROM panels WHERE id = ?', [id]);
+        
+        if (panel.length === 0) {
+            return res.status(404).json({ error: 'Panel not found' });
+        }
+        
+        const panelData = panel[0];
+        
+        // Generate new reference number
+        const referenceNumber = await generateReferenceNumber();
+        
+        // Prepare new panel data
+        const newPanelData = {
+            ...panelData,
+            reference_number: referenceNumber,
+            job_no: `${panelData.job_no}`,
+            status: 'pending',
+            balance: panelData.qty || 0,
+            notes: null
+        };
+        
+        // Remove id and timestamps
+        delete newPanelData.id;
+        delete newPanelData.created_at;
+        delete newPanelData.updated_at;
+        
+        // Insert duplicate panel
+        const [result] = await db.execute(
+            `INSERT INTO panels 
+            (reference_number, job_no, type, panel_thk, joint, 
+             surface_front, surface_back, surface_front_thk, surface_back_thk, 
+             surface_type, width, length, qty, cutting, 
+             balance, production_meter, brand, estimated_delivery, 
+             salesman, notes, status)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+            [
+                newPanelData.reference_number,
+                newPanelData.job_no,
+                newPanelData.type,
+                newPanelData.panel_thk,
+                newPanelData.joint,
+                newPanelData.surface_front,
+                newPanelData.surface_back,
+                newPanelData.surface_front_thk,
+                newPanelData.surface_back_thk,
+                newPanelData.surface_type,
+                newPanelData.width,
+                newPanelData.length,
+                newPanelData.qty,
+                newPanelData.cutting,
+                newPanelData.balance,
+                newPanelData.production_meter,
+                newPanelData.brand,
+                newPanelData.estimated_delivery,
+                newPanelData.salesman,
+                newPanelData.notes,
+                newPanelData.status
+            ]
+        );
+        
+        // Get the created panel
+        const [newPanel] = await db.execute(
+            'SELECT * FROM panels WHERE id = ?',
+            [result.insertId]
+        );
+        
+        res.status(201).json(newPanel[0]);
+        
+    } catch (error) {
+        console.error('Error duplicating panel:', error);
+        res.status(500).json({ 
+            error: 'Failed to duplicate panel',
             details: error.message 
         });
     }
@@ -220,7 +302,7 @@ router.put('/:id', async (req, res) => {
             'surface_front', 'surface_back', 'surface_front_thk', 'surface_back_thk',
             'surface_type', 'width', 'length', 'qty', 'cutting',
             'balance', 'production_meter', 'brand', 'estimated_delivery',
-            'salesman', 'notes', 'status'  // Added salesman and notes
+            'salesman', 'notes', 'status'
         ];
         
         // Build update query dynamically
@@ -512,8 +594,7 @@ router.post('/:panelId/production-with-balance', async (req, res) => {
     }
 });
 
-// In your backend (Node.js example)
-// Add this route to your viewPanel.js or main routes file
+// PATCH /api/panels/production-records/:id/status - Update production record status
 router.patch('/production-records/:id/status', async (req, res) => {
     try {
         const { id } = req.params;
