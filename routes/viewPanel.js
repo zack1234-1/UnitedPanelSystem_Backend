@@ -209,15 +209,55 @@ router.post('/:id/duplicate', async (req, res) => {
         delete newPanelData.created_at;
         delete newPanelData.updated_at;
         
+        // DEBUG: Log the original estimated_delivery value
+        console.log('Original estimated_delivery:', panelData.estimated_delivery);
+        console.log('Type of estimated_delivery:', typeof panelData.estimated_delivery);
+        
         // Fix: Convert estimated_delivery to proper MySQL date format
         let formattedEstimatedDelivery = null;
         if (newPanelData.estimated_delivery) {
-            const date = new Date(newPanelData.estimated_delivery);
-            if (!isNaN(date.getTime())) {
-                // Format to YYYY-MM-DD
-                formattedEstimatedDelivery = date.toISOString().split('T')[0];
+            console.log('Processing estimated_delivery:', newPanelData.estimated_delivery);
+            
+            try {
+                // First, check if it's already in YYYY-MM-DD format
+                if (typeof newPanelData.estimated_delivery === 'string' && 
+                    newPanelData.estimated_delivery.match(/^\d{4}-\d{2}-\d{2}$/)) {
+                    formattedEstimatedDelivery = newPanelData.estimated_delivery;
+                    console.log('Already in YYYY-MM-DD format:', formattedEstimatedDelivery);
+                } else {
+                    // Parse the date
+                    const date = new Date(newPanelData.estimated_delivery);
+                    
+                    // Check if it's a valid date
+                    if (isNaN(date.getTime())) {
+                        console.log('Invalid date, setting to null');
+                        formattedEstimatedDelivery = null;
+                    } else {
+                        // Format to YYYY-MM-DD
+                        const year = date.getFullYear();
+                        const month = String(date.getMonth() + 1).padStart(2, '0');
+                        const day = String(date.getDate()).padStart(2, '0');
+                        formattedEstimatedDelivery = `${year}-${month}-${day}`;
+                        console.log('Formatted date:', formattedEstimatedDelivery);
+                    }
+                }
+            } catch (dateError) {
+                console.error('Error parsing date:', dateError);
+                formattedEstimatedDelivery = null;
             }
+        } else {
+            console.log('No estimated_delivery provided, using null');
         }
+        
+        // DEBUG: Log the values being inserted
+        console.log('Values to insert:');
+        console.log('- reference_number:', newPanelData.reference_number);
+        console.log('- job_no:', newPanelData.job_no);
+        console.log('- type:', newPanelData.type);
+        console.log('- panel_thk:', newPanelData.panel_thk);
+        console.log('- joint:', newPanelData.joint);
+        console.log('- estimated_delivery (formatted):', formattedEstimatedDelivery);
+        console.log('- salesman:', newPanelData.salesman);
         
         // Insert duplicate panel
         const [result] = await db.execute(
@@ -263,9 +303,17 @@ router.post('/:id/duplicate', async (req, res) => {
         
     } catch (error) {
         console.error('Error duplicating panel:', error);
+        console.error('SQL Error details:', {
+            code: error.code,
+            errno: error.errno,
+            sqlState: error.sqlState,
+            sqlMessage: error.sqlMessage
+        });
+        
         res.status(500).json({ 
             error: 'Failed to duplicate panel',
-            details: error.message 
+            details: error.message,
+            sqlMessage: error.sqlMessage
         });
     }
 });
