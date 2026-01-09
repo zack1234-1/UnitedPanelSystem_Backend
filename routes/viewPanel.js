@@ -181,139 +181,76 @@ router.post('/', async (req, res) => {
 router.post('/:id/duplicate', async (req, res) => {
     try {
         const { id } = req.params;
-        
-        // Get the panel to duplicate
-        const [panel] = await db.execute('SELECT * FROM panels WHERE id = ?', [id]);
-        
-        if (panel.length === 0) {
+
+        // 1. Get the panel to duplicate
+        const [panels] = await db.execute('SELECT * FROM panels WHERE id = ?', [id]);
+
+        if (panels.length === 0) {
             return res.status(404).json({ error: 'Panel not found' });
         }
-        
-        const panelData = panel[0];
-        
-        // Generate new reference number
+
+        const panelData = panels[0];
+
+        // 2. Generate new reference number
         const referenceNumber = await generateReferenceNumber();
-        
-        // Prepare new panel data
-        const newPanelData = {
-            ...panelData,
-            reference_number: referenceNumber,
-            job_no: `${panelData.job_no}`,
-            status: 'pending',
-            balance: panelData.qty || 0,
-            notes: null
-        };
-        
-        // Remove id and timestamps
-        delete newPanelData.id;
-        delete newPanelData.created_at;
-        delete newPanelData.updated_at;
-        
-        // DEBUG: Log the original estimated_delivery value
-        console.log('Original estimated_delivery:', panelData.estimated_delivery);
-        console.log('Type of estimated_delivery:', typeof panelData.estimated_delivery);
-        
-        // Fix: Convert estimated_delivery to proper MySQL date format
-        let formattedEstimatedDelivery = null;
-        if (newPanelData.estimated_delivery) {
-            console.log('Processing estimated_delivery:', newPanelData.estimated_delivery);
-            
-            try {
-                // First, check if it's already in YYYY-MM-DD format
-                if (typeof newPanelData.estimated_delivery === 'string' && 
-                    newPanelData.estimated_delivery.match(/^\d{4}-\d{2}-\d{2}$/)) {
-                    formattedEstimatedDelivery = newPanelData.estimated_delivery;
-                    console.log('Already in YYYY-MM-DD format:', formattedEstimatedDelivery);
-                } else {
-                    // Parse the date
-                    const date = new Date(newPanelData.estimated_delivery);
-                    
-                    // Check if it's a valid date
-                    if (isNaN(date.getTime())) {
-                        console.log('Invalid date, setting to null');
-                        formattedEstimatedDelivery = null;
-                    } else {
-                        // Format to YYYY-MM-DD
-                        const year = date.getFullYear();
-                        const month = String(date.getMonth() + 1).padStart(2, '0');
-                        const day = String(date.getDate()).padStart(2, '0');
-                        formattedEstimatedDelivery = `${year}-${month}-${day}`;
-                        console.log('Formatted date:', formattedEstimatedDelivery);
-                    }
-                }
-            } catch (dateError) {
-                console.error('Error parsing date:', dateError);
-                formattedEstimatedDelivery = null;
+
+        // 3. Handle the Date Formatting Safely
+        let formattedDate = null;
+        if (panelData.estimated_delivery) {
+            const dateObj = new Date(panelData.estimated_delivery);
+            if (!isNaN(dateObj.getTime())) {
+                // Converts "2026-01-10T00:00:00.000Z" to "2026-01-10"
+                formattedDate = dateObj.toISOString().split('T')[0];
             }
-        } else {
-            console.log('No estimated_delivery provided, using null');
         }
-        
-        // DEBUG: Log the values being inserted
-        console.log('Values to insert:');
-        console.log('- reference_number:', newPanelData.reference_number);
-        console.log('- job_no:', newPanelData.job_no);
-        console.log('- type:', newPanelData.type);
-        console.log('- panel_thk:', newPanelData.panel_thk);
-        console.log('- joint:', newPanelData.joint);
-        console.log('- estimated_delivery (formatted):', formattedEstimatedDelivery);
-        console.log('- salesman:', newPanelData.salesman);
-        
-        // Insert duplicate panel
-        const [result] = await db.execute(
-            `INSERT INTO panels 
+
+        // 4. Prepare the insert query
+        const sql = `INSERT INTO panels 
             (reference_number, job_no, type, panel_thk, joint, 
              surface_front, surface_back, surface_front_thk, surface_back_thk, 
              surface_type, width, length, qty, cutting, 
              balance, production_meter, brand, estimated_delivery, 
              salesman, notes, status)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-            [
-                newPanelData.reference_number,
-                newPanelData.job_no,
-                newPanelData.type,
-                newPanelData.panel_thk,
-                newPanelData.joint,
-                newPanelData.surface_front,
-                newPanelData.surface_back,
-                newPanelData.surface_front_thk,
-                newPanelData.surface_back_thk,
-                newPanelData.surface_type,
-                newPanelData.width,
-                newPanelData.length,
-                newPanelData.qty,
-                newPanelData.cutting,
-                newPanelData.balance,
-                newPanelData.production_meter,
-                newPanelData.brand,
-                formattedEstimatedDelivery, // Use formatted date
-                newPanelData.salesman,
-                newPanelData.notes,
-                newPanelData.status
-            ]
-        );
-        
-        // Get the created panel
-        const [newPanel] = await db.execute(
-            'SELECT * FROM panels WHERE id = ?',
-            [result.insertId]
-        );
-        
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`;
+
+        const values = [
+            referenceNumber,
+            panelData.job_no,
+            panelData.type,
+            panelData.panel_thk,
+            panelData.joint,
+            panelData.surface_front,
+            panelData.surface_back,
+            panelData.surface_front_thk,
+            panelData.surface_back_thk,
+            panelData.surface_type,
+            panelData.width,
+            panelData.length,
+            panelData.qty,
+            panelData.cutting,
+            panelData.qty || 0, // Setting balance to initial qty
+            panelData.production_meter,
+            panelData.brand,
+            formattedDate,      // The cleaned YYYY-MM-DD date
+            panelData.salesman,
+            null,               // Notes set to null as per your logic
+            'pending'           // Status set to pending
+        ];
+
+        // 5. Execute Insert
+        const [result] = await db.execute(sql, values);
+
+        // 6. Fetch and return the newly created panel
+        const [newPanel] = await db.execute('SELECT * FROM panels WHERE id = ?', [result.insertId]);
+
         res.status(201).json(newPanel[0]);
-        
+
     } catch (error) {
         console.error('Error duplicating panel:', error);
-        console.error('SQL Error details:', {
-            code: error.code,
-            errno: error.errno,
-            sqlState: error.sqlState,
-            sqlMessage: error.sqlMessage
-        });
-        
         res.status(500).json({ 
             error: 'Failed to duplicate panel',
             details: error.message,
-            sqlMessage: error.sqlMessage
+            sqlMessage: error.sqlMessage 
         });
     }
 });
