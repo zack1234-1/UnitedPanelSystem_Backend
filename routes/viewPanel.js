@@ -209,6 +209,16 @@ router.post('/:id/duplicate', async (req, res) => {
         delete newPanelData.created_at;
         delete newPanelData.updated_at;
         
+        // Fix: Convert estimated_delivery to proper MySQL date format
+        let formattedEstimatedDelivery = null;
+        if (newPanelData.estimated_delivery) {
+            const date = new Date(newPanelData.estimated_delivery);
+            if (!isNaN(date.getTime())) {
+                // Format to YYYY-MM-DD
+                formattedEstimatedDelivery = date.toISOString().split('T')[0];
+            }
+        }
+        
         // Insert duplicate panel
         const [result] = await db.execute(
             `INSERT INTO panels 
@@ -236,7 +246,7 @@ router.post('/:id/duplicate', async (req, res) => {
                 newPanelData.balance,
                 newPanelData.production_meter,
                 newPanelData.brand,
-                newPanelData.estimated_delivery,
+                formattedEstimatedDelivery, // Use formatted date
                 newPanelData.salesman,
                 newPanelData.notes,
                 newPanelData.status
