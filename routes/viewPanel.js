@@ -106,103 +106,7 @@ router.post('/', async (req, res) => {
             estimated_delivery,
             salesman,
             notes,
-            status = 'pending'
-        } = req.body;
-        
-        // Basic validation
-        if (!job_no || !width || !length) {
-            return res.status(400).json({ 
-                error: 'Job No, width, and length are required' 
-            });
-        }
-        
-        // Generate reference number if not provided
-        let refNumber = reference_number;
-        if (!refNumber) {
-            refNumber = await generateReferenceNumber();
-        }
-        
-        // Calculate initial balance (set to qty if not provided)
-        const initialBalance = balance !== undefined ? parseInt(balance) : (qty ? parseInt(qty) : 0);
-        
-        // Insert into database with new fields
-        const query = `
-            INSERT INTO panels 
-            (reference_number, job_no, type, panel_thk, joint, 
-             surface_front, surface_back, surface_front_thk, surface_back_thk, 
-             surface_type, width, length, qty, cutting, 
-             balance, production_meter, brand, estimated_delivery, 
-             salesman, notes, status)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-        `;
-        
-        const [result] = await db.execute(query, [
-            refNumber,
-            job_no || null,
-            type || null,
-            panel_thk ? parseFloat(panel_thk) : null,
-            joint || null,
-            surface_front || null,
-            surface_back || null,
-            surface_front_thk ? parseFloat(surface_front_thk) : null,
-            surface_back_thk ? parseFloat(surface_back_thk) : null,
-            surface_type || null,
-            parseFloat(width) || 0,
-            parseFloat(length) || 0,
-            qty ? parseInt(qty) : null,
-            cutting || null,
-            initialBalance,
-            production_meter ? parseFloat(production_meter) : null,
-            brand || null,
-            estimated_delivery || null,
-            salesman || null,
-            notes || null,
-            status
-        ]);
-        
-        // Return the created panel
-        const [panel] = await db.execute(
-            'SELECT * FROM panels WHERE id = ?',
-            [result.insertId]
-        );
-        
-        res.status(201).json(panel[0]);
-        
-    } catch (error) {
-        console.error('Error creating panel:', error);
-        res.status(500).json({ 
-            error: 'Failed to create panel',
-            details: error.message 
-        });
-    }
-});
-
-// POST /api/panels/:id/duplicate - Duplicate a panel
-// POST /api/panels - Create a new panel
-router.post('/', async (req, res) => {
-    try {
-        const {
-            reference_number,
-            job_no,
-            type,
-            panel_thk,
-            joint,
-            surface_front,
-            surface_back,
-            surface_front_thk,
-            surface_back_thk,
-            surface_type,
-            width,
-            length,
-            qty,
-            cutting,
-            balance,
-            production_meter,
-            brand,
-            estimated_delivery,
-            salesman,
-            notes,
-            application,  // Added application
+            application,
             status = 'pending'
         } = req.body;
         
@@ -229,8 +133,8 @@ router.post('/', async (req, res) => {
              surface_front, surface_back, surface_front_thk, surface_back_thk, 
              surface_type, width, length, qty, cutting, 
              balance, production_meter, brand, estimated_delivery, 
-             salesman, notes, application, status)  // Added application to columns
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)  // Now 22 values
+             salesman, notes, application, status)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         `;
         
         const [result] = await db.execute(query, [
@@ -254,7 +158,7 @@ router.post('/', async (req, res) => {
             estimated_delivery || null,
             salesman || null,
             notes || null,
-            application || null,  // Added application value
+            application || null,
             status
         ]);
         
@@ -271,6 +175,84 @@ router.post('/', async (req, res) => {
         res.status(500).json({ 
             error: 'Failed to create panel',
             details: error.message 
+        });
+    }
+});
+
+// POST /api/panels/:id/duplicate - Duplicate a panel
+router.post('/:id/duplicate', async (req, res) => {
+    try {
+        const { id } = req.params;
+
+        // 1. Get the panel to duplicate
+        const [panels] = await db.execute('SELECT * FROM panels WHERE id = ?', [id]);
+
+        if (panels.length === 0) {
+            return res.status(404).json({ error: 'Panel not found' });
+        }
+
+        const panelData = panels[0];
+
+        // 2. Generate new reference number
+        const referenceNumber = await generateReferenceNumber();
+
+        // 3. Handle the Date Formatting Safely
+        let formattedDate = null;
+        if (panelData.estimated_delivery) {
+            const dateObj = new Date(panelData.estimated_delivery);
+            if (!isNaN(dateObj.getTime())) {
+                // Converts "2026-01-10T00:00:00.000Z" to "2026-01-10"
+                formattedDate = dateObj.toISOString().split('T')[0];
+            }
+        }
+
+        // 4. Prepare the insert query
+        const sql = `INSERT INTO panels 
+            (reference_number, job_no, type, panel_thk, joint, 
+             surface_front, surface_back, surface_front_thk, surface_back_thk, 
+             surface_type, width, length, qty, cutting, 
+             balance, production_meter, brand, estimated_delivery, 
+             salesman, notes, status)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`;
+
+        const values = [
+            referenceNumber,
+            panelData.job_no,
+            panelData.type,
+            panelData.panel_thk,
+            panelData.joint,
+            panelData.surface_front,
+            panelData.surface_back,
+            panelData.surface_front_thk,
+            panelData.surface_back_thk,
+            panelData.surface_type,
+            panelData.width,
+            panelData.length,
+            panelData.qty,
+            panelData.cutting,
+            panelData.qty || 0, // Setting balance to initial qty
+            panelData.production_meter,
+            panelData.brand,
+            formattedDate,      // The cleaned YYYY-MM-DD date
+            panelData.salesman,
+            null,               // Notes set to null as per your logic
+            'pending'           // Status set to pending
+        ];
+
+        // 5. Execute Insert
+        const [result] = await db.execute(sql, values);
+
+        // 6. Fetch and return the newly created panel
+        const [newPanel] = await db.execute('SELECT * FROM panels WHERE id = ?', [result.insertId]);
+
+        res.status(201).json(newPanel[0]);
+
+    } catch (error) {
+        console.error('Error duplicating panel:', error);
+        res.status(500).json({ 
+            error: 'Failed to duplicate panel',
+            details: error.message,
+            sqlMessage: error.sqlMessage 
         });
     }
 });
