@@ -82,7 +82,6 @@ router.get('/:id', async (req, res) => {
     }
 });
 
-// POST /api/panels - Create a new panel
 router.post('/', async (req, res) => {
     try {
         const {
@@ -104,8 +103,10 @@ router.post('/', async (req, res) => {
             production_meter,
             brand,
             estimated_delivery,
+            created_at, // Added this line
             salesman,
             notes,
+            application,
             status = 'pending'
         } = req.body;
         
@@ -122,18 +123,39 @@ router.post('/', async (req, res) => {
             refNumber = await generateReferenceNumber();
         }
         
-        // Calculate initial balance (set to qty if not provided)
-        const initialBalance = balance !== undefined ? parseInt(balance) : (qty ? parseInt(qty) : 0);
+        // Parse values
+        const widthFloat = parseFloat(width) || 0;
+        const lengthFloat = parseFloat(length) || 0;
+        const qtyInt = qty ? parseInt(qty) : 0;
         
-        // Insert into database with new fields
+        // Calculate initial balance (set to qty if not provided)
+        const initialBalance = balance !== undefined ? parseInt(balance) : qtyInt;
+        
+        // Calculate initial production meter: length * (qty - balance)
+        // If balance is same as qty (new panel), production meter should be 0
+        // If balance is less than qty (already produced some), production meter should be positive
+        const calculatedProductionMeter = (lengthFloat * (qtyInt - initialBalance)) || 0;
+        
+        // Use calculated production meter unless explicitly provided
+        const finalProductionMeter = production_meter !== undefined ? 
+            parseFloat(production_meter) : calculatedProductionMeter;
+        
+        // If created_at is not provided, use current date/time
+        // If it's provided but empty string, set to null
+        let createdAtValue = created_at;
+        if (!created_at || created_at.trim() === '') {
+            createdAtValue = new Date(); // Current date/time
+        }
+        
+        // Insert into database with application and created_at fields
         const query = `
             INSERT INTO panels 
             (reference_number, job_no, type, panel_thk, joint, 
              surface_front, surface_back, surface_front_thk, surface_back_thk, 
              surface_type, width, length, qty, cutting, 
              balance, production_meter, brand, estimated_delivery, 
-             salesman, notes, status)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+             created_at, salesman, notes, application, status)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         `;
         
         const [result] = await db.execute(query, [
@@ -147,16 +169,18 @@ router.post('/', async (req, res) => {
             surface_front_thk ? parseFloat(surface_front_thk) : null,
             surface_back_thk ? parseFloat(surface_back_thk) : null,
             surface_type || null,
-            parseFloat(width) || 0,
-            parseFloat(length) || 0,
-            qty ? parseInt(qty) : null,
+            widthFloat,
+            lengthFloat,
+            qtyInt,
             cutting || null,
             initialBalance,
-            production_meter ? parseFloat(production_meter) : null,
+            finalProductionMeter,
             brand || null,
             estimated_delivery || null,
+            createdAtValue, // Added this parameter
             salesman || null,
             notes || null,
+            application || null,
             status
         ]);
         
@@ -181,81 +205,76 @@ router.post('/', async (req, res) => {
 router.post('/:id/duplicate', async (req, res) => {
     try {
         const { id } = req.params;
-        
-        // Get the panel to duplicate
-        const [panel] = await db.execute('SELECT * FROM panels WHERE id = ?', [id]);
-        
-        if (panel.length === 0) {
+
+        // 1. Get the panel to duplicate
+        const [panels] = await db.execute('SELECT * FROM panels WHERE id = ?', [id]);
+
+        if (panels.length === 0) {
             return res.status(404).json({ error: 'Panel not found' });
         }
-        
-        const panelData = panel[0];
-        
-        // Generate new reference number
+
+        const panelData = panels[0];
+
+        // 2. Generate new reference number
         const referenceNumber = await generateReferenceNumber();
-        
-        // Prepare new panel data
-        const newPanelData = {
-            ...panelData,
-            reference_number: referenceNumber,
-            job_no: `${panelData.job_no}`,
-            status: 'pending',
-            balance: panelData.qty || 0,
-            notes: null
-        };
-        
-        // Remove id and timestamps
-        delete newPanelData.id;
-        delete newPanelData.created_at;
-        delete newPanelData.updated_at;
-        
-        // Insert duplicate panel
-        const [result] = await db.execute(
-            `INSERT INTO panels 
+
+        // 3. Handle the Date Formatting Safely
+        let formattedDate = null;
+        if (panelData.estimated_delivery) {
+            const dateObj = new Date(panelData.estimated_delivery);
+            if (!isNaN(dateObj.getTime())) {
+                // Converts "2026-01-10T00:00:00.000Z" to "2026-01-10"
+                formattedDate = dateObj.toISOString().split('T')[0];
+            }
+        }
+
+        // 4. Prepare the insert query
+        const sql = `INSERT INTO panels 
             (reference_number, job_no, type, panel_thk, joint, 
              surface_front, surface_back, surface_front_thk, surface_back_thk, 
              surface_type, width, length, qty, cutting, 
              balance, production_meter, brand, estimated_delivery, 
              salesman, notes, status)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-            [
-                newPanelData.reference_number,
-                newPanelData.job_no,
-                newPanelData.type,
-                newPanelData.panel_thk,
-                newPanelData.joint,
-                newPanelData.surface_front,
-                newPanelData.surface_back,
-                newPanelData.surface_front_thk,
-                newPanelData.surface_back_thk,
-                newPanelData.surface_type,
-                newPanelData.width,
-                newPanelData.length,
-                newPanelData.qty,
-                newPanelData.cutting,
-                newPanelData.balance,
-                newPanelData.production_meter,
-                newPanelData.brand,
-                newPanelData.estimated_delivery,
-                newPanelData.salesman,
-                newPanelData.notes,
-                newPanelData.status
-            ]
-        );
-        
-        // Get the created panel
-        const [newPanel] = await db.execute(
-            'SELECT * FROM panels WHERE id = ?',
-            [result.insertId]
-        );
-        
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`;
+
+        const values = [
+            referenceNumber,
+            panelData.job_no,
+            panelData.type,
+            panelData.panel_thk,
+            panelData.joint,
+            panelData.surface_front,
+            panelData.surface_back,
+            panelData.surface_front_thk,
+            panelData.surface_back_thk,
+            panelData.surface_type,
+            panelData.width,
+            panelData.length,
+            panelData.qty,
+            panelData.cutting,
+            panelData.qty || 0, // Setting balance to initial qty
+            panelData.production_meter,
+            panelData.brand,
+            formattedDate,      // The cleaned YYYY-MM-DD date
+            panelData.salesman,
+            null,               // Notes set to null as per your logic
+            'pending'           // Status set to pending
+        ];
+
+        // 5. Execute Insert
+        const [result] = await db.execute(sql, values);
+
+        // 6. Fetch and return the newly created panel
+        const [newPanel] = await db.execute('SELECT * FROM panels WHERE id = ?', [result.insertId]);
+
         res.status(201).json(newPanel[0]);
-        
+
     } catch (error) {
         console.error('Error duplicating panel:', error);
         res.status(500).json({ 
             error: 'Failed to duplicate panel',
-            details: error.message 
+            details: error.message,
+            sqlMessage: error.sqlMessage 
         });
     }
 });
@@ -280,6 +299,21 @@ router.put('/:id', async (req, res) => {
             return res.status(400).json({ error: 'Width and length must be positive numbers' });
         }
         
+        // Get current panel data to calculate production meter if needed
+        let currentPanel = null;
+        let needsProductionMeterCalculation = false;
+        
+        // Check if we need to calculate production meter
+        if (updateFields.length !== undefined || updateFields.qty !== undefined || updateFields.balance !== undefined) {
+            // Fetch current panel to get all values
+            const [current] = await db.execute('SELECT * FROM panels WHERE id = ?', [id]);
+            if (current.length === 0) {
+                return res.status(404).json({ error: 'Panel not found' });
+            }
+            currentPanel = current[0];
+            needsProductionMeterCalculation = true;
+        }
+        
         // If qty is being updated, recalculate balance based on production records
         if (updateFields.qty !== undefined) {
             // Get current production records total
@@ -294,15 +328,42 @@ router.put('/:id', async (req, res) => {
             // Calculate new balance (qty - total produced)
             const newBalance = Math.max(0, newQty - totalProduced);
             updateFields.balance = newBalance;
+            
+            // Mark that we need to recalculate production meter since balance changed
+            needsProductionMeterCalculation = true;
+            if (!currentPanel) {
+                const [current] = await db.execute('SELECT * FROM panels WHERE id = ?', [id]);
+                currentPanel = current[0];
+            }
         }
         
-        // Define allowed fields that can be updated (added salesman and notes)
+        // Recalculate production meter if needed
+        if (needsProductionMeterCalculation && currentPanel) {
+            // Only recalculate if production_meter is not explicitly provided in the update
+            if (updateFields.production_meter === undefined) {
+                // Use updated values if provided, otherwise use current values
+                const newLength = updateFields.length !== undefined ? 
+                    parseFloat(updateFields.length) : parseFloat(currentPanel.length);
+                const newQty = updateFields.qty !== undefined ? 
+                    parseInt(updateFields.qty) : parseInt(currentPanel.qty);
+                const newBalance = updateFields.balance !== undefined ? 
+                    parseInt(updateFields.balance) : parseInt(currentPanel.balance);
+                
+                // Calculate production meter: length * (qty - balance)
+                const calculatedProductionMeter = newLength * (newQty - newBalance);
+                
+                // Ensure it's not negative (in case balance > qty due to data issues)
+                updateFields.production_meter = Math.max(0, calculatedProductionMeter);
+            }
+        }
+        
+        // Define allowed fields that can be updated (added application)
         const allowedFields = [
             'reference_number', 'job_no', 'type', 'panel_thk', 'joint',
             'surface_front', 'surface_back', 'surface_front_thk', 'surface_back_thk',
             'surface_type', 'width', 'length', 'qty', 'cutting',
             'balance', 'production_meter', 'brand', 'estimated_delivery',
-            'salesman', 'notes', 'status'
+            'salesman', 'notes', 'status', 'application'  // Added application
         ];
         
         // Build update query dynamically
@@ -409,7 +470,7 @@ router.get('/:panelId/production-records', async (req, res) => {
         }
         
         const [records] = await db.execute(
-            'SELECT * FROM production_records WHERE panel_id = ? ORDER BY date DESC, created_at DESC',
+            'SELECT * FROM production_records WHERE panel_id = ? ORDER BY created_at DESC',
             [panelId]
         );
         
@@ -428,17 +489,11 @@ router.post('/:panelId/production-records', async (req, res) => {
     try {
         const { panelId } = req.params;
         const {
-            date,
             number_of_panels,
             notes,
             delivery_date,
             reference_number
         } = req.body;
-        
-        // Validate required fields
-        if (!date) {
-            return res.status(400).json({ error: 'Date is required' });
-        }
         
         if (!number_of_panels || number_of_panels < 1) {
             return res.status(400).json({ error: 'Number of panels must be at least 1' });
@@ -460,7 +515,7 @@ router.post('/:panelId/production-records', async (req, res) => {
         const query = `
             INSERT INTO production_records 
             (panel_id, reference_number, job_no, brand, estimated_delivery, 
-             date, delivery_date, number_of_panels, notes)
+             delivery_date, number_of_panels, notes)
             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
         `;
         
@@ -470,7 +525,6 @@ router.post('/:panelId/production-records', async (req, res) => {
             panelData.job_no || null,
             panelData.brand || null,
             panelData.estimated_delivery || null,
-            date,
             delivery_date || date,
             parseInt(number_of_panels) || 1,
             notes || null
@@ -498,17 +552,11 @@ router.post('/:panelId/production-with-balance', async (req, res) => {
     try {
         const { panelId } = req.params;
         const {
-            date,
             number_of_panels,
             notes,
             delivery_date,
             reference_number
         } = req.body;
-        
-        // Validate required fields
-        if (!date) {
-            return res.status(400).json({ error: 'Date is required' });
-        }
         
         if (!number_of_panels || number_of_panels < 1) {
             return res.status(400).json({ error: 'Number of panels must be at least 1' });
@@ -548,8 +596,8 @@ router.post('/:panelId/production-with-balance', async (req, res) => {
             const query = `
                 INSERT INTO production_records 
                 (panel_id, reference_number, job_no, brand, estimated_delivery, 
-                 date, delivery_date, number_of_panels, notes, balance_after)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                 delivery_date, number_of_panels, notes, balance_after)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?,?)
             `;
             
             const [insertResult] = await connection.execute(query, [
@@ -558,8 +606,7 @@ router.post('/:panelId/production-with-balance', async (req, res) => {
                 panelData.job_no || null,
                 panelData.brand || null,
                 panelData.estimated_delivery || null,
-                date,
-                delivery_date || date,
+                delivery_date || null,
                 panelsToProduce,
                 notes || null,
                 newBalance
@@ -1028,6 +1075,100 @@ router.get('/stats/summary', async (req, res) => {
         console.error('Error fetching statistics:', error);
         res.status(500).json({ 
             error: 'Failed to fetch statistics',
+            details: error.message 
+        });
+    }
+});
+
+router.get('/production-records/all', async (req, res) => {
+    try {
+        // SQL query with proper table aliases
+        const query = `
+            SELECT 
+                pr.*,
+                p.id as panel_table_id,
+                p.reference_number as panel_reference_number,
+                p.job_no as panel_job_no,
+                p.length as panel_length,
+                p.width as panel_width,
+                p.type as panel_type,
+                p.panel_thk as panel_thickness,
+                p.joint as panel_joint,
+                p.surface_front,
+                p.surface_back,
+                p.surface_type,
+                p.qty as panel_qty,
+                p.balance as panel_balance,
+                p.production_meter,
+                p.salesman,
+                p.notes as panel_notes,
+                p.created_at as panel_created_at
+            FROM production_records pr
+            LEFT JOIN panels p ON pr.panel_id = p.id
+            ORDER BY pr.created_at DESC
+        `;
+        
+        // Execute query - adjust based on your database library
+        // For mysql2/promise:
+        const [allRecords] = await db.query(query);
+        
+        // Or for node-postgres:
+        // const result = await db.query(query);
+        // const allRecords = result.rows;
+        
+        // Format the response to match your original structure if needed
+        const formattedRecords = allRecords.map(record => {
+            // Create a clean response object
+            const response = {
+                ...record,
+                panel: {
+                    id: record.panel_table_id,
+                    reference_number: record.panel_reference_number,
+                    job_no: record.panel_job_no,
+                    length: record.panel_length,
+                    width: record.panel_width,
+                    type: record.panel_type,
+                    panel_thk: record.panel_thickness,
+                    joint: record.panel_joint,
+                    surface_front: record.surface_front,
+                    surface_back: record.surface_back,
+                    surface_type: record.surface_type,
+                    qty: record.panel_qty,
+                    balance: record.panel_balance,
+                    production_meter: record.production_meter,
+                    salesman: record.salesman,
+                    notes: record.panel_notes,
+                    created_at: record.panel_created_at
+                }
+            };
+            
+            // Remove the aliased panel fields from the main object
+            delete response.panel_table_id;
+            delete response.panel_reference_number;
+            delete response.panel_job_no;
+            delete response.panel_length;
+            delete response.panel_width;
+            delete response.panel_type;
+            delete response.panel_thickness;
+            delete response.panel_joint;
+            delete response.surface_front;
+            delete response.surface_back;
+            delete response.surface_type;
+            delete response.panel_qty;
+            delete response.panel_balance;
+            delete response.production_meter;
+            delete response.salesman;
+            delete response.panel_notes;
+            delete response.panel_created_at;
+            
+            return response;
+        });
+        
+        res.json(formattedRecords);
+    } catch (error) {
+        console.error('Error fetching production records:', error);
+        res.status(500).json({ 
+            error: 'Failed to fetch production records',
             details: error.message 
         });
     }
