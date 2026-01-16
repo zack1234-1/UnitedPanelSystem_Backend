@@ -36,7 +36,7 @@ envVarGroups:
       - key: JWT_SECRET
         sync: false
       - key: API_BASE_URL
-        value: https://project-backend-1.onrender.com
+        value: https://unitedpanelsystem-backend-1.onrender.com
       - key: ALLOWED_ORIGINS
         value: https://unitedpanelsystem-frontend1.onrender.com
 
