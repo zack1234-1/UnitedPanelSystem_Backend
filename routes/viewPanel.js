@@ -82,7 +82,6 @@ router.get('/:id', async (req, res) => {
     }
 });
 
-// POST /api/panels - Create a new panel
 router.post('/', async (req, res) => {
     try {
         const {
@@ -104,6 +103,7 @@ router.post('/', async (req, res) => {
             production_meter,
             brand,
             estimated_delivery,
+            created_at, // Added this line
             salesman,
             notes,
             application,
@@ -123,18 +123,39 @@ router.post('/', async (req, res) => {
             refNumber = await generateReferenceNumber();
         }
         
-        // Calculate initial balance (set to qty if not provided)
-        const initialBalance = balance !== undefined ? parseInt(balance) : (qty ? parseInt(qty) : 0);
+        // Parse values
+        const widthFloat = parseFloat(width) || 0;
+        const lengthFloat = parseFloat(length) || 0;
+        const qtyInt = qty ? parseInt(qty) : 0;
         
-        // Insert into database with application field
+        // Calculate initial balance (set to qty if not provided)
+        const initialBalance = balance !== undefined ? parseInt(balance) : qtyInt;
+        
+        // Calculate initial production meter: length * (qty - balance)
+        // If balance is same as qty (new panel), production meter should be 0
+        // If balance is less than qty (already produced some), production meter should be positive
+        const calculatedProductionMeter = (lengthFloat * (qtyInt - initialBalance)) || 0;
+        
+        // Use calculated production meter unless explicitly provided
+        const finalProductionMeter = production_meter !== undefined ? 
+            parseFloat(production_meter) : calculatedProductionMeter;
+        
+        // If created_at is not provided, use current date/time
+        // If it's provided but empty string, set to null
+        let createdAtValue = created_at;
+        if (!created_at || created_at.trim() === '') {
+            createdAtValue = new Date(); // Current date/time
+        }
+        
+        // Insert into database with application and created_at fields
         const query = `
             INSERT INTO panels 
             (reference_number, job_no, type, panel_thk, joint, 
              surface_front, surface_back, surface_front_thk, surface_back_thk, 
              surface_type, width, length, qty, cutting, 
              balance, production_meter, brand, estimated_delivery, 
-             salesman, notes, application, status)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+             created_at, salesman, notes, application, status)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         `;
         
         const [result] = await db.execute(query, [
@@ -148,14 +169,15 @@ router.post('/', async (req, res) => {
             surface_front_thk ? parseFloat(surface_front_thk) : null,
             surface_back_thk ? parseFloat(surface_back_thk) : null,
             surface_type || null,
-            parseFloat(width) || 0,
-            parseFloat(length) || 0,
-            qty ? parseInt(qty) : null,
+            widthFloat,
+            lengthFloat,
+            qtyInt,
             cutting || null,
             initialBalance,
-            production_meter ? parseFloat(production_meter) : null,
+            finalProductionMeter,
             brand || null,
             estimated_delivery || null,
+            createdAtValue, // Added this parameter
             salesman || null,
             notes || null,
             application || null,
@@ -277,6 +299,21 @@ router.put('/:id', async (req, res) => {
             return res.status(400).json({ error: 'Width and length must be positive numbers' });
         }
         
+        // Get current panel data to calculate production meter if needed
+        let currentPanel = null;
+        let needsProductionMeterCalculation = false;
+        
+        // Check if we need to calculate production meter
+        if (updateFields.length !== undefined || updateFields.qty !== undefined || updateFields.balance !== undefined) {
+            // Fetch current panel to get all values
+            const [current] = await db.execute('SELECT * FROM panels WHERE id = ?', [id]);
+            if (current.length === 0) {
+                return res.status(404).json({ error: 'Panel not found' });
+            }
+            currentPanel = current[0];
+            needsProductionMeterCalculation = true;
+        }
+        
         // If qty is being updated, recalculate balance based on production records
         if (updateFields.qty !== undefined) {
             // Get current production records total
@@ -291,6 +328,33 @@ router.put('/:id', async (req, res) => {
             // Calculate new balance (qty - total produced)
             const newBalance = Math.max(0, newQty - totalProduced);
             updateFields.balance = newBalance;
+            
+            // Mark that we need to recalculate production meter since balance changed
+            needsProductionMeterCalculation = true;
+            if (!currentPanel) {
+                const [current] = await db.execute('SELECT * FROM panels WHERE id = ?', [id]);
+                currentPanel = current[0];
+            }
+        }
+        
+        // Recalculate production meter if needed
+        if (needsProductionMeterCalculation && currentPanel) {
+            // Only recalculate if production_meter is not explicitly provided in the update
+            if (updateFields.production_meter === undefined) {
+                // Use updated values if provided, otherwise use current values
+                const newLength = updateFields.length !== undefined ? 
+                    parseFloat(updateFields.length) : parseFloat(currentPanel.length);
+                const newQty = updateFields.qty !== undefined ? 
+                    parseInt(updateFields.qty) : parseInt(currentPanel.qty);
+                const newBalance = updateFields.balance !== undefined ? 
+                    parseInt(updateFields.balance) : parseInt(currentPanel.balance);
+                
+                // Calculate production meter: length * (qty - balance)
+                const calculatedProductionMeter = newLength * (newQty - newBalance);
+                
+                // Ensure it's not negative (in case balance > qty due to data issues)
+                updateFields.production_meter = Math.max(0, calculatedProductionMeter);
+            }
         }
         
         // Define allowed fields that can be updated (added application)
@@ -1011,6 +1075,100 @@ router.get('/stats/summary', async (req, res) => {
         console.error('Error fetching statistics:', error);
         res.status(500).json({ 
             error: 'Failed to fetch statistics',
+            details: error.message 
+        });
+    }
+});
+
+router.get('/production-records/all', async (req, res) => {
+    try {
+        // SQL query with proper table aliases
+        const query = `
+            SELECT 
+                pr.*,
+                p.id as panel_table_id,
+                p.reference_number as panel_reference_number,
+                p.job_no as panel_job_no,
+                p.length as panel_length,
+                p.width as panel_width,
+                p.type as panel_type,
+                p.panel_thk as panel_thickness,
+                p.joint as panel_joint,
+                p.surface_front,
+                p.surface_back,
+                p.surface_type,
+                p.qty as panel_qty,
+                p.balance as panel_balance,
+                p.production_meter,
+                p.salesman,
+                p.notes as panel_notes,
+                p.created_at as panel_created_at
+            FROM production_records pr
+            LEFT JOIN panels p ON pr.panel_id = p.id
+            ORDER BY pr.created_at DESC
+        `;
+        
+        // Execute query - adjust based on your database library
+        // For mysql2/promise:
+        const [allRecords] = await db.query(query);
+        
+        // Or for node-postgres:
+        // const result = await db.query(query);
+        // const allRecords = result.rows;
+        
+        // Format the response to match your original structure if needed
+        const formattedRecords = allRecords.map(record => {
+            // Create a clean response object
+            const response = {
+                ...record,
+                panel: {
+                    id: record.panel_table_id,
+                    reference_number: record.panel_reference_number,
+                    job_no: record.panel_job_no,
+                    length: record.panel_length,
+                    width: record.panel_width,
+                    type: record.panel_type,
+                    panel_thk: record.panel_thickness,
+                    joint: record.panel_joint,
+                    surface_front: record.surface_front,
+                    surface_back: record.surface_back,
+                    surface_type: record.surface_type,
+                    qty: record.panel_qty,
+                    balance: record.panel_balance,
+                    production_meter: record.production_meter,
+                    salesman: record.salesman,
+                    notes: record.panel_notes,
+                    created_at: record.panel_created_at
+                }
+            };
+            
+            // Remove the aliased panel fields from the main object
+            delete response.panel_table_id;
+            delete response.panel_reference_number;
+            delete response.panel_job_no;
+            delete response.panel_length;
+            delete response.panel_width;
+            delete response.panel_type;
+            delete response.panel_thickness;
+            delete response.panel_joint;
+            delete response.surface_front;
+            delete response.surface_back;
+            delete response.surface_type;
+            delete response.panel_qty;
+            delete response.panel_balance;
+            delete response.production_meter;
+            delete response.salesman;
+            delete response.panel_notes;
+            delete response.panel_created_at;
+            
+            return response;
+        });
+        
+        res.json(formattedRecords);
+    } catch (error) {
+        console.error('Error fetching production records:', error);
+        res.status(500).json({ 
+            error: 'Failed to fetch production records',
             details: error.message 
         });
     }
