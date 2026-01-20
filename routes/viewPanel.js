@@ -521,7 +521,9 @@ router.post('/:panelId/production-records', async (req, res) => {
             number_of_panels,
             notes,
             delivery_date,
-            reference_number
+            reference_number,
+            brand, // Add brand from request body
+            status // Add status from request body
         } = req.body;
         
         if (!number_of_panels || number_of_panels < 1) {
@@ -530,7 +532,7 @@ router.post('/:panelId/production-records', async (req, res) => {
         
         // Check if panel exists and get panel details
         const [panel] = await db.execute(
-            'SELECT id, job_no, brand, estimated_delivery FROM panels WHERE id = ?',
+            'SELECT id, job_no, estimated_delivery, reference_number FROM panels WHERE id = ?',
             [panelId]
         );
         
@@ -544,7 +546,7 @@ router.post('/:panelId/production-records', async (req, res) => {
         const query = `
             INSERT INTO production_records 
             (panel_id, reference_number, job_no, brand, estimated_delivery, 
-             delivery_date, number_of_panels, notes)
+             delivery_date, number_of_panels, notes, status)
             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
         `;
         
@@ -552,11 +554,12 @@ router.post('/:panelId/production-records', async (req, res) => {
             panelId,
             reference_number || null,
             panelData.job_no || null,
-            panelData.brand || null,
+            brand || null, // Use brand from request body
             panelData.estimated_delivery || null,
-            delivery_date || date,
+            delivery_date || null,
             parseInt(number_of_panels) || 1,
-            notes || null
+            notes || null,
+            status || 'pending'
         ]);
         
         // Return the created record
@@ -575,7 +578,6 @@ router.post('/:panelId/production-records', async (req, res) => {
         });
     }
 });
-
 // POST /api/panels/:panelId/production-with-balance - Create production record with balance update
 router.post('/:panelId/production-with-balance', async (req, res) => {
     try {
@@ -584,7 +586,13 @@ router.post('/:panelId/production-with-balance', async (req, res) => {
             number_of_panels,
             notes,
             delivery_date,
-            reference_number
+            reference_number,
+            brand, // Add brand from request body
+            status, // Add status from request body
+            job_no,
+            width,
+            length,
+            panel_reference // Added panel_reference parameter
         } = req.body;
         
         if (!number_of_panels || number_of_panels < 1) {
@@ -625,20 +633,22 @@ router.post('/:panelId/production-with-balance', async (req, res) => {
             const query = `
                 INSERT INTO production_records 
                 (panel_id, reference_number, job_no, brand, estimated_delivery, 
-                 delivery_date, number_of_panels, notes, balance_after)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?,?)
+                 delivery_date, number_of_panels, notes, status, balance_after)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             `;
             
             const [insertResult] = await connection.execute(query, [
                 panelId,
                 reference_number || panelData.reference_number,
-                panelData.job_no || null,
-                panelData.brand || null,
+                job_no || panelData.job_no || null,
+                brand || panelData.brand || null, // Use brand from request, fallback to panel's brand
                 panelData.estimated_delivery || null,
                 delivery_date || null,
                 panelsToProduce,
                 notes || null,
+                status || 'pending',
                 newBalance
+                // Removed extra parameters: panelData.reference_number, width, length
             ]);
             
             // Get the created record
@@ -742,7 +752,7 @@ router.put('/:panelId/production-records/:recordId', async (req, res) => {
         const fields = [];
         const values = [];
         
-        const allowedFields = ['date', 'number_of_panels', 'notes', 'delivery_date'];
+        const allowedFields = ['date', 'number_of_panels', 'notes', 'delivery_date', 'brand', 'status'];
         
         for (const [key, value] of Object.entries(updateFields)) {
             if (!allowedFields.includes(key)) continue;
@@ -753,6 +763,14 @@ router.put('/:panelId/production-records/:recordId', async (req, res) => {
                 }
                 fields.push(`${key} = ?`);
                 values.push(value ? parseInt(value) : null);
+            } else if (key === 'status') {
+                // Validate status
+                const allowedStatuses = ['pending', 'in_progress', 'completed', 'cancelled', 'on_hold'];
+                if (value && !allowedStatuses.includes(value)) {
+                    return res.status(400).json({ error: 'Invalid status value' });
+                }
+                fields.push(`${key} = ?`);
+                values.push(value);
             } else {
                 fields.push(`${key} = ?`);
                 values.push(value);
