@@ -357,14 +357,17 @@ router.put('/:id', async (req, res) => {
             }
         }
         
-        // Define allowed fields that can be updated (added application)
+        // Define allowed fields that can be updated
         const allowedFields = [
             'reference_number', 'job_no', 'type', 'panel_thk', 'joint',
             'surface_front', 'surface_back', 'surface_front_thk', 'surface_back_thk',
             'surface_type', 'width', 'length', 'qty', 'cutting',
             'balance', 'production_meter', 'brand', 'estimated_delivery',
-            'salesman', 'notes', 'status', 'application'  // Added application
+            'salesman', 'notes', 'status', 'application', 'created_at'
         ];
+        
+        // Define date fields that need special handling
+        const dateFields = ['created_at', 'estimated_delivery'];
         
         // Build update query dynamically
         const fields = [];
@@ -374,6 +377,31 @@ router.put('/:id', async (req, res) => {
             // Skip if field is not allowed or is id
             if (!allowedFields.includes(key) || key === 'id') continue;
             
+            // Handle date fields
+            if (dateFields.includes(key)) {
+                if (value) {
+                    try {
+                        // Convert ISO string to MySQL datetime format
+                        const date = new Date(value);
+                        if (isNaN(date.getTime())) {
+                            return res.status(400).json({ error: `Invalid date format for ${key}` });
+                        }
+                        // Format as MySQL DATETIME: YYYY-MM-DD HH:MM:SS
+                        const mysqlDatetime = date.toISOString().slice(0, 19).replace('T', ' ');
+                        fields.push(`${key} = ?`);
+                        values.push(mysqlDatetime);
+                    } catch (error) {
+                        return res.status(400).json({ error: `Invalid date value for ${key}` });
+                    }
+                } else {
+                    // If value is null or empty, set to NULL in database
+                    fields.push(`${key} = ?`);
+                    values.push(null);
+                }
+                continue;
+            }
+            
+            // Handle numeric fields
             const numericFields = [
                 'width', 'length', 'panel_thk', 'surface_front_thk', 
                 'surface_back_thk', 'qty', 'balance', 'production_meter'
@@ -388,6 +416,7 @@ router.put('/:id', async (req, res) => {
                     values.push(value ? parseFloat(value) : null);
                 }
             } else {
+                // Handle string fields
                 fields.push(`${key} = ?`);
                 values.push(value);
             }
