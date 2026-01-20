@@ -604,7 +604,7 @@ router.post('/:panelId/production-with-balance', async (req, res) => {
         const result = await executeTransaction(async (connection) => {
             // Check if panel exists and get current balance
             const [panel] = await connection.execute(
-                'SELECT id, balance, qty, job_no, brand, estimated_delivery, reference_number FROM panels WHERE id = ?',
+                'SELECT id, balance, qty, job_no,estimated_delivery, reference_number FROM panels WHERE id = ?',
                 [panelId]
             );
             
