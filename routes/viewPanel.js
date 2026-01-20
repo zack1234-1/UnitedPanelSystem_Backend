@@ -357,13 +357,13 @@ router.put('/:id', async (req, res) => {
             }
         }
         
-        // Define allowed fields that can be updated (added application)
+        // Define allowed fields that can be updated
         const allowedFields = [
             'reference_number', 'job_no', 'type', 'panel_thk', 'joint',
             'surface_front', 'surface_back', 'surface_front_thk', 'surface_back_thk',
             'surface_type', 'width', 'length', 'qty', 'cutting',
             'balance', 'production_meter', 'brand', 'estimated_delivery',
-            'salesman', 'notes', 'status', 'application'  // Added application
+            'salesman', 'notes', 'status', 'application', 'created_at'  // Added created_at
         ];
         
         // Build update query dynamically
