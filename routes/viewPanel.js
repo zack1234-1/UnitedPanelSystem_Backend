@@ -101,9 +101,8 @@ router.post('/', async (req, res) => {
             cutting,
             balance,
             production_meter,
-            brand,
             estimated_delivery,
-            created_at, // Added this line
+            created_at,
             salesman,
             notes,
             application,
@@ -132,20 +131,14 @@ router.post('/', async (req, res) => {
         const initialBalance = balance !== undefined ? parseInt(balance) : qtyInt;
         
         // Calculate initial production meter: length * (qty - balance)
-        // If balance is same as qty (new panel), production meter should be 0
-        // If balance is less than qty (already produced some), production meter should be positive
         const calculatedProductionMeter = (lengthFloat * (qtyInt - initialBalance)) || 0;
         
         // Use calculated production meter unless explicitly provided
         const finalProductionMeter = production_meter !== undefined ? 
             parseFloat(production_meter) : calculatedProductionMeter;
         
-        // If created_at is not provided, use current date/time
-        // If it's provided but empty string, set to null
-        let createdAtValue = created_at;
-        if (!created_at || created_at.trim() === '') {
-            createdAtValue = new Date(); // Current date/time
-        }
+        // If created_at is not provided, set to null
+        let createdAtValue = created_at || null;
         
         // Insert into database with application and created_at fields
         const query = `
@@ -153,9 +146,9 @@ router.post('/', async (req, res) => {
             (reference_number, job_no, type, panel_thk, joint, 
              surface_front, surface_back, surface_front_thk, surface_back_thk, 
              surface_type, width, length, qty, cutting, 
-             balance, production_meter, brand, estimated_delivery, 
+             balance, production_meter, estimated_delivery, 
              created_at, salesman, notes, application, status)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         `;
         
         const [result] = await db.execute(query, [
@@ -175,9 +168,8 @@ router.post('/', async (req, res) => {
             cutting || null,
             initialBalance,
             finalProductionMeter,
-            brand || null,
             estimated_delivery || null,
-            createdAtValue, // Added this parameter
+            createdAtValue,
             salesman || null,
             notes || null,
             application || null,
@@ -223,7 +215,6 @@ router.post('/:id/duplicate', async (req, res) => {
         if (panelData.estimated_delivery) {
             const dateObj = new Date(panelData.estimated_delivery);
             if (!isNaN(dateObj.getTime())) {
-                // Converts "2026-01-10T00:00:00.000Z" to "2026-01-10"
                 formattedDate = dateObj.toISOString().split('T')[0];
             }
         }
@@ -233,9 +224,9 @@ router.post('/:id/duplicate', async (req, res) => {
             (reference_number, job_no, type, panel_thk, joint, 
              surface_front, surface_back, surface_front_thk, surface_back_thk, 
              surface_type, width, length, qty, cutting, 
-             balance, production_meter, brand, estimated_delivery, 
+             balance, production_meter, estimated_delivery, 
              salesman, notes, status)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`;
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`;
 
         const values = [
             referenceNumber,
@@ -252,13 +243,12 @@ router.post('/:id/duplicate', async (req, res) => {
             panelData.length,
             panelData.qty,
             panelData.cutting,
-            panelData.qty || 0, // Setting balance to initial qty
+            panelData.qty || 0,
             panelData.production_meter,
-            panelData.brand,
-            formattedDate,      // The cleaned YYYY-MM-DD date
+            formattedDate,
             panelData.salesman,
-            null,               // Notes set to null as per your logic
-            'pending'           // Status set to pending
+            null,
+            'pending'
         ];
 
         // 5. Execute Insert
@@ -352,7 +342,7 @@ router.put('/:id', async (req, res) => {
                 // Calculate production meter: length * (qty - balance)
                 const calculatedProductionMeter = newLength * (newQty - newBalance);
                 
-                // Ensure it's not negative (in case balance > qty due to data issues)
+                // Ensure it's not negative
                 updateFields.production_meter = Math.max(0, calculatedProductionMeter);
             }
         }
@@ -362,7 +352,7 @@ router.put('/:id', async (req, res) => {
             'reference_number', 'job_no', 'type', 'panel_thk', 'joint',
             'surface_front', 'surface_back', 'surface_front_thk', 'surface_back_thk',
             'surface_type', 'width', 'length', 'qty', 'cutting',
-            'balance', 'production_meter', 'brand', 'estimated_delivery',
+            'balance', 'production_meter', 'estimated_delivery',
             'salesman', 'notes', 'status', 'application', 'created_at'
         ];
         
@@ -381,12 +371,10 @@ router.put('/:id', async (req, res) => {
             if (dateFields.includes(key)) {
                 if (value) {
                     try {
-                        // Convert ISO string to MySQL datetime format
                         const date = new Date(value);
                         if (isNaN(date.getTime())) {
                             return res.status(400).json({ error: `Invalid date format for ${key}` });
                         }
-                        // Format as MySQL DATETIME: YYYY-MM-DD HH:MM:SS
                         const mysqlDatetime = date.toISOString().slice(0, 19).replace('T', ' ');
                         fields.push(`${key} = ?`);
                         values.push(mysqlDatetime);
@@ -394,7 +382,6 @@ router.put('/:id', async (req, res) => {
                         return res.status(400).json({ error: `Invalid date value for ${key}` });
                     }
                 } else {
-                    // If value is null or empty, set to NULL in database
                     fields.push(`${key} = ?`);
                     values.push(null);
                 }
@@ -522,8 +509,8 @@ router.post('/:panelId/production-records', async (req, res) => {
             notes,
             delivery_date,
             reference_number,
-            brand, // Add brand from request body
-            status // Add status from request body
+            brand,
+            status
         } = req.body;
         
         if (!number_of_panels || number_of_panels < 1) {
@@ -554,7 +541,7 @@ router.post('/:panelId/production-records', async (req, res) => {
             panelId,
             reference_number || null,
             panelData.job_no || null,
-            brand || null, // Use brand from request body
+            brand || null,
             panelData.estimated_delivery || null,
             delivery_date || null,
             parseInt(number_of_panels) || 1,
@@ -587,12 +574,12 @@ router.post('/:panelId/production-with-balance', async (req, res) => {
             notes,
             delivery_date,
             reference_number,
-            brand, // Add brand from request body
-            status, // Add status from request body
+            brand,
+            status,
             job_no,
             width,
             length,
-            panel_reference // Added panel_reference parameter
+            panel_reference
         } = req.body;
         
         if (!number_of_panels || number_of_panels < 1) {
@@ -604,7 +591,7 @@ router.post('/:panelId/production-with-balance', async (req, res) => {
         const result = await executeTransaction(async (connection) => {
             // Check if panel exists and get current balance
             const [panel] = await connection.execute(
-                'SELECT id, balance, qty, job_no,estimated_delivery, reference_number FROM panels WHERE id = ?',
+                'SELECT id, balance, qty, job_no, estimated_delivery, reference_number FROM panels WHERE id = ?',
                 [panelId]
             );
             
@@ -641,7 +628,7 @@ router.post('/:panelId/production-with-balance', async (req, res) => {
                 panelId,
                 reference_number || panelData.reference_number,
                 job_no || panelData.job_no || null,
-                brand || panelData.brand || null, // Use brand from request, fallback to panel's brand
+                brand || null,
                 panelData.estimated_delivery || null,
                 delivery_date || null,
                 panelsToProduce,
@@ -1129,7 +1116,6 @@ router.get('/stats/summary', async (req, res) => {
 
 router.get('/production-records/all', async (req, res) => {
     try {
-        // SQL query with proper table aliases
         const query = `
             SELECT 
                 pr.*,
@@ -1155,17 +1141,9 @@ router.get('/production-records/all', async (req, res) => {
             ORDER BY pr.created_at DESC
         `;
         
-        // Execute query - adjust based on your database library
-        // For mysql2/promise:
         const [allRecords] = await db.query(query);
         
-        // Or for node-postgres:
-        // const result = await db.query(query);
-        // const allRecords = result.rows;
-        
-        // Format the response to match your original structure if needed
         const formattedRecords = allRecords.map(record => {
-            // Create a clean response object
             const response = {
                 ...record,
                 panel: {
@@ -1189,7 +1167,6 @@ router.get('/production-records/all', async (req, res) => {
                 }
             };
             
-            // Remove the aliased panel fields from the main object
             delete response.panel_table_id;
             delete response.panel_reference_number;
             delete response.panel_job_no;
