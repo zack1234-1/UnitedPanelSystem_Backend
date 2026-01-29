@@ -461,8 +461,8 @@ router.delete('/file/:id', async (req, res) => {
         'door': 'total_door',
         'strip_curtain': 'total_strip_curtain',
         'accessories': 'total_accessories',
-        'system': 'system_tasks',
-        'transportation': 'transportation_tasks',
+        'system': 'total_system',
+        'transportation': 'total_transportation',
         'quotation': 'total_quotation'
     };
     
@@ -474,7 +474,7 @@ router.delete('/file/:id', async (req, res) => {
         'accessories': 'accessories_tasks',
         'system': 'system_tasks',
         'transportation': 'transportation_tasks',
-        'quotation': 'total_quotation'
+        'quotation': 'quotation_tasks'
     };
 
     try {
