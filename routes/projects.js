@@ -463,7 +463,7 @@ router.delete('/file/:id', async (req, res) => {
         'accessories': 'total_accessories',
         'system': 'system_tasks',
         'transportation': 'transportation_tasks',
-        'quotation': 'quotation_tasks'
+        'quotation': 'total_quotation'
     };
     
     const taskTableMap = {
@@ -474,7 +474,7 @@ router.delete('/file/:id', async (req, res) => {
         'accessories': 'accessories_tasks',
         'system': 'system_tasks',
         'transportation': 'transportation_tasks',
-        'quotation': 'quotation_tasks'
+        'quotation': 'total_quotation'
     };
 
     try {
