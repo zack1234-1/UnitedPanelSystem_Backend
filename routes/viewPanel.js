@@ -82,6 +82,7 @@ router.get('/:id', async (req, res) => {
     }
 });
 
+// POST /api/panels - Create a new panel
 router.post('/', async (req, res) => {
     try {
         const {
@@ -137,10 +138,47 @@ router.post('/', async (req, res) => {
         const finalProductionMeter = production_meter !== undefined ? 
             parseFloat(production_meter) : calculatedProductionMeter;
         
-        // If created_at is not provided, set to null
-        let createdAtValue = created_at || null;
+        // ============================================
+        // FIX DATE FORMATTING ISSUES
+        // ============================================
         
-        // Insert into database with application and created_at fields
+        // Format estimated_delivery from ISO string to YYYY-MM-DD
+        let formattedEstimatedDelivery = null;
+        if (estimated_delivery) {
+            try {
+                const date = new Date(estimated_delivery);
+                if (!isNaN(date.getTime())) {
+                    // Format as YYYY-MM-DD for MySQL DATE column
+                    const year = date.getFullYear();
+                    const month = String(date.getMonth() + 1).padStart(2, '0');
+                    const day = String(date.getDate()).padStart(2, '0');
+                    formattedEstimatedDelivery = `${year}-${month}-${day}`;
+                }
+            } catch (err) {
+                console.error('Error formatting estimated_delivery:', err);
+                // If format fails, set to null
+            }
+        }
+        
+        // Format created_at from ISO string to MySQL DATETIME format
+        let formattedCreatedAt = null;
+        if (created_at) {
+            try {
+                const date = new Date(created_at);
+                if (!isNaN(date.getTime())) {
+                    // Format as MySQL DATETIME: YYYY-MM-DD HH:MM:SS
+                    formattedCreatedAt = date.toISOString().slice(0, 19).replace('T', ' ');
+                }
+            } catch (err) {
+                console.error('Error formatting created_at:', err);
+                // If format fails, set to null
+            }
+        }
+        
+        // ============================================
+        // INSERT WITH PROPERLY FORMATTED DATES
+        // ============================================
+        
         const query = `
             INSERT INTO panels 
             (reference_number, job_no, type, panel_thk, joint, 
@@ -168,8 +206,8 @@ router.post('/', async (req, res) => {
             cutting || null,
             initialBalance,
             finalProductionMeter,
-            estimated_delivery || null,
-            createdAtValue,
+            formattedEstimatedDelivery, // Use formatted date
+            formattedCreatedAt, // Use formatted date
             salesman || null,
             notes || null,
             application || null,
@@ -188,7 +226,8 @@ router.post('/', async (req, res) => {
         console.error('Error creating panel:', error);
         res.status(500).json({ 
             error: 'Failed to create panel',
-            details: error.message 
+            details: error.message,
+            sqlMessage: error.sqlMessage 
         });
     }
 });
