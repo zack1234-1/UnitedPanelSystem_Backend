@@ -638,7 +638,7 @@ router.post('/', async (req, res) => {
         salesman, 
         poPayment, 
         requestedDelivery, 
-        remark,
+        remarks,
         sales,
         sell,
         cost,
@@ -670,9 +670,9 @@ router.post('/', async (req, res) => {
         const columnNames = columns.map(col => col.COLUMN_NAME);
         
         // Use safeProjectNo for the database entry
-        let projectsColumns = ['drawingDate', 'projectNo', 'customer', 'poPayment', 'requestedDelivery', 'remark', 'status', 'created_at'];
+        let projectsColumns = ['drawingDate', 'projectNo', 'customer', 'poPayment', 'requestedDelivery', 'remarks', 'status', 'created_at'];
         let projectsPlaceholders = ['?', '?', '?', '?', '?', '?', '?', 'NOW()'];
-        let projectsValues = [drawingDate, safeProjectNo, customer, poPayment, requestedDelivery, remark, status];
+        let projectsValues = [drawingDate, safeProjectNo, customer, poPayment, requestedDelivery, remarks, status];
 
         if (columnNames.includes('projectName')) {
             projectsColumns.push('projectName');
@@ -726,7 +726,7 @@ router.post('/', async (req, res) => {
                     Sell_Price: sell || 0,
                     Cost: cost || 0,
                     Margin: margin || 0,
-                    Remarks: remark || null
+                    Remarks: remarks || null
                 };
 
                 const sqlColumns = Object.keys(ledgerData).join(', ');
@@ -819,7 +819,7 @@ router.put('/:id', async (req, res) => {
     const updateFields = req.body;
 
     // Build dynamic update query based on provided fields
-    const allowedFields = ['drawingDate', 'projectNo', 'customer', 'poPayment', 'requestedDelivery', 'remark'];
+    const allowedFields = ['drawingDate', 'projectNo', 'customer', 'poPayment', 'requestedDelivery', 'remarks'];
     const fieldsToUpdate = {};
     
     allowedFields.forEach(field => {
