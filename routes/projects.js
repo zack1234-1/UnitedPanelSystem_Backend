@@ -656,6 +656,10 @@ router.post('/', async (req, res) => {
     // This ensures filenames and database keys are safe for URLs and file systems
     const safeProjectNo = projectNo.replace(/\//g, '_'); 
 
+    // FIX: Convert empty date strings to null for MySQL compatibility
+    drawingDate = drawingDate === '' ? null : drawingDate;
+    requestedDelivery = requestedDelivery === '' ? null : requestedDelivery;
+
     const connection = await db.getConnection();
     
     try {
