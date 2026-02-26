@@ -9,6 +9,7 @@ const path = require('path');
 let projectRoutes, panelTasksRoutes, doorTasksRouter, accessoriesTasksRouter, cuttingTasksRouter;
 let stripCurtainTasksRouter, systemTasksRouter, adminProjectRoutes, activityLogsRouter;
 let subTasksRouter, orderRouter, excelDataRouter, panelsRouter;
+let transportationTasksRouter; // Added transportation router
 
 // Helper function to load modules safely
 function loadModule(modulePath, fallbackName) {
@@ -32,7 +33,7 @@ function loadModule(modulePath, fallbackName) {
 }
 
 // Load routes
-projectRoutes = loadModule('./routes/projects', 'projectRoutes'); // Remove the "Routes" suffix
+projectRoutes = loadModule('./routes/projects', 'projectRoutes');
 panelTasksRoutes = loadModule('./routes/panelTasks', 'panelTasks');
 doorTasksRouter = loadModule('./routes/doorTasks', 'doorTasks');
 accessoriesTasksRouter = loadModule('./routes/accessoriesTasks', 'accessoriesTasks');
@@ -44,7 +45,8 @@ activityLogsRouter = loadModule('./routes/activityLogsRouter', 'activityLogs');
 subTasksRouter = loadModule('./routes/subtasks', 'subtasks');
 orderRouter = loadModule('./routes/orders', 'orders');
 excelDataRouter = loadModule('./routes/excelData', 'excelData');
-panelsRouter = loadModule('./routes/viewPanel', 'panels'); // This should be your API routes
+panelsRouter = loadModule('./routes/viewPanel', 'panels');
+transportationTasksRouter = loadModule('./routes/transportationTasks', 'transportationTasks'); // Added
 
 const app = express();
 
@@ -90,19 +92,20 @@ app.get('/', (req, res) => {
         health: '/health',
         api_documentation: {
             projects: '/api/projects',
-            panels: '/api/panels', // API endpoint
+            panels: '/api/panels',
             panelTasks: '/api/panel-tasks',
             doorTasks: '/api/door-tasks',
             accessoriesTasks: '/api/accessories-tasks',
             cuttingTasks: '/api/cutting-tasks',
             stripCurtainTasks: '/api/strip-curtain-tasks',
             systemTasks: '/api/system-tasks',
+            transportationTasks: '/api/transportation-tasks', // Added
             activityLogs: '/api/activity-logs',
             subtasks: '/api/subtasks',
             orders: '/api/orders'
         },
         views: {
-            panels: '/view-panels' // HTML view endpoint
+            panels: '/view-panels'
         }
     });
 });
@@ -112,13 +115,14 @@ app.use(express.static('public'));
 
 // API Routes
 app.use('/api/projects', projectRoutes);
-app.use('/api/panels', panelsRouter); // API endpoints at /api/panels
+app.use('/api/panels', panelsRouter);
 app.use('/api/panel-tasks', panelTasksRoutes);
 app.use('/api/door-tasks', doorTasksRouter);
 app.use('/api/accessories-tasks', accessoriesTasksRouter);
 app.use('/api/cutting-tasks', cuttingTasksRouter);
 app.use('/api/strip-curtain-tasks', stripCurtainTasksRouter);
 app.use('/api/system-tasks', systemTasksRouter);
+app.use('/api/transportation-tasks', transportationTasksRouter); // Added
 app.use('/api/admin/projects', adminProjectRoutes);
 app.use('/api/activity-logs', activityLogsRouter);
 app.use('/api/subtasks', subTasksRouter);
@@ -133,7 +137,7 @@ app.use((req, res, next) => {
         available_endpoints: [
             '/',
             '/health',
-            '/view-panels', // Added HTML view
+            '/view-panels',
             '/api/projects',
             '/api/panels',
             '/api/panel-tasks',
@@ -142,6 +146,7 @@ app.use((req, res, next) => {
             '/api/cutting-tasks',
             '/api/strip-curtain-tasks',
             '/api/system-tasks',
+            '/api/transportation-tasks', // Added
             '/api/projects/status/approved',
             '/api/activity-logs',
             '/api/subtasks',
@@ -191,6 +196,7 @@ const server = app.listen(PORT, '0.0.0.0', () => {
     console.log(`✅ Health check: http://localhost:${PORT}/health`);
     console.log(`✅ Panels API: http://localhost:${PORT}/api/panels`);
     console.log(`✅ Panels View: http://localhost:${PORT}/view-panels`);
+    console.log(`✅ Transportation Tasks API: http://localhost:${PORT}/api/transportation-tasks`); // Added
     
     // Log loaded modules
     console.log('\n📦 Loaded modules:');
@@ -202,6 +208,7 @@ const server = app.listen(PORT, '0.0.0.0', () => {
     console.log('- cuttingTasksRouter:', cuttingTasksRouter ? '✓' : '✗');
     console.log('- stripCurtainTasksRouter:', stripCurtainTasksRouter ? '✓' : '✗');
     console.log('- systemTasksRouter:', systemTasksRouter ? '✓' : '✗');
+    console.log('- transportationTasksRouter:', transportationTasksRouter ? '✓' : '✗'); // Added
     console.log('- adminProjectRoutes:', adminProjectRoutes ? '✓' : '✗');
     console.log('- activityLogsRouter:', activityLogsRouter ? '✓' : '✗');
     console.log('- subTasksRouter:', subTasksRouter ? '✓' : '✗');

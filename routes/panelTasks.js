@@ -2,19 +2,55 @@ const express = require('express');
 const router = express.Router();
 const pool = require('../db/connection'); 
 const { updateProjectCounts } = require('./projectUpdater');
-const TASK_TYPE_PREFIX = 'panel'; // <--- Define the type prefix for this router
+const multer = require('multer');
+
+const TASK_TYPE_PREFIX = 'panel';
+
+// Configure multer to use memory storage (for BLOB storage)
+const upload = multer({
+    storage: multer.memoryStorage(), // Store in memory as buffer
+    limits: { fileSize: 5 * 1024 * 1024 }, // 5MB limit
+    fileFilter: (req, file, cb) => {
+        const allowedTypes = /jpeg|jpg|png|gif|webp/;
+        const mimetype = allowedTypes.test(file.mimetype);
+        
+        if (mimetype) {
+            return cb(null, true);
+        } else {
+            cb(new Error('Only image files are allowed!'));
+        }
+    }
+});
 
 // Utility function to format database results for the API response
-const formatTask = (task) => ({
-    id: task.id,
-    title: task.title,
-    description: task.description,
-    priority: task.priority,
-    status: task.status,
-    projectNo: task.project_no,
-    dueDate: task.due_date,
-    createdAt: task.created_at
-});
+const formatTask = (task) => {
+    const result = {
+        id: task.id,
+        title: task.title,
+        description: task.description,
+        priority: task.priority,
+        status: task.status,
+        projectNo: task.project_no,
+        dueDate: task.due_date,
+        createdAt: task.created_at,
+        signatureDate: task.signature_date,
+        imageDate: task.image_date
+    };
+    
+    // If signature exists, create a data URL
+    if (task.signature_data && task.signature_mimetype) {
+        const base64Signature = task.signature_data.toString('base64');
+        result.signatureUrl = `data:${task.signature_mimetype};base64,${base64Signature}`;
+    }
+    
+    // If image exists, create a data URL
+    if (task.image_data && task.image_mimetype) {
+        const base64Image = task.image_data.toString('base64');
+        result.imageUrl = `data:${task.image_mimetype};base64,${base64Image}`;
+    }
+    
+    return result;
+};
 
 // =========================================================
 // GET /api/panel-tasks - Get all panel tasks
@@ -39,7 +75,6 @@ router.get('/', async (req, res) => {
 
 // =========================================================
 // POST /api/panel-tasks - Create a new panel task
-// (Increments total_panel and potentially completed_panel)
 // =========================================================
 router.post('/', async (req, res) => {
     console.log('POST /api/panel-tasks called with body:', req.body);
@@ -105,7 +140,6 @@ router.post('/', async (req, res) => {
 
 // =========================================================
 // PATCH /api/panel-tasks/:id - Update a panel task
-// (Handles status change for completed_panel count)
 // =========================================================
 router.patch('/:id', async (req, res) => {
     console.log(`PATCH /api/panel-tasks/${req.params.id} called with body:`, req.body); 
@@ -183,10 +217,8 @@ router.patch('/:id', async (req, res) => {
     }
 });
 
-
 // =========================================================
 // DELETE /api/panel-tasks/:id - Delete a panel task
-// (Decrements total_panel and potentially completed_panel)
 // =========================================================
 router.delete('/:id', async (req, res) => {
     console.log(`DELETE /api/panel-tasks/${req.params.id} called`); 
@@ -221,6 +253,224 @@ router.delete('/:id', async (req, res) => {
     } catch (err) {
         console.error('Error deleting task or updating project counts:', err);
         return res.status(500).json({ error: 'Failed to delete task' });
+    }
+});
+
+// =========================================================
+// POST /api/panel-tasks/:id/signature - Upload signature as BLOB
+// =========================================================
+router.post('/:id/signature', upload.single('signature'), async (req, res) => {
+    console.log(`POST /api/panel-tasks/${req.params.id}/signature called`);
+    
+    const taskId = parseInt(req.params.id);
+    
+    if (!req.file) {
+        return res.status(400).json({ error: 'No signature file uploaded' });
+    }
+    
+    // Get file buffer and mimetype
+    const signatureData = req.file.buffer; // This is the BLOB data
+    const signatureMimetype = req.file.mimetype;
+    
+    try {
+        // Update the task with signature BLOB data
+        const updateSql = `UPDATE panel_tasks 
+                          SET signature_data = ?, signature_mimetype = ?, signature_date = NOW() 
+                          WHERE id = ?`;
+        
+        await pool.execute(updateSql, [signatureData, signatureMimetype, taskId]);
+        
+        // Fetch and return the updated task
+        const selectSql = 'SELECT * FROM panel_tasks WHERE id = ?';
+        const [rows] = await pool.execute(selectSql, [taskId]);
+        
+        if (rows.length === 0) {
+            return res.status(404).json({ error: 'Task not found' });
+        }
+        
+        res.json(formatTask(rows[0]));
+    } catch (err) {
+        console.error('Error uploading signature:', err);
+        return res.status(500).json({ error: 'Failed to upload signature' });
+    }
+});
+
+// =========================================================
+// DELETE /api/panel-tasks/:id/signature - Delete signature BLOB
+// =========================================================
+router.delete('/:id/signature', async (req, res) => {
+    console.log(`DELETE /api/panel-tasks/${req.params.id}/signature called`);
+    
+    const taskId = parseInt(req.params.id);
+    
+    try {
+        // Check if task exists
+        const [existingRows] = await pool.execute(
+            'SELECT id FROM panel_tasks WHERE id = ?', 
+            [taskId]
+        );
+        
+        if (existingRows.length === 0) {
+            return res.status(404).json({ error: 'Task not found' });
+        }
+        
+        // Update the task to remove signature BLOB data
+        const updateSql = `UPDATE panel_tasks 
+                          SET signature_data = NULL, signature_mimetype = NULL, signature_date = NULL 
+                          WHERE id = ?`;
+        
+        await pool.execute(updateSql, [taskId]);
+        
+        // Fetch and return the updated task
+        const selectSql = 'SELECT * FROM panel_tasks WHERE id = ?';
+        const [rows] = await pool.execute(selectSql, [taskId]);
+        
+        res.json(formatTask(rows[0]));
+    } catch (err) {
+        console.error('Error deleting signature:', err);
+        return res.status(500).json({ error: 'Failed to delete signature' });
+    }
+});
+
+// =========================================================
+// POST /api/panel-tasks/:id/image - Upload image as BLOB
+// =========================================================
+router.post('/:id/image', upload.single('image'), async (req, res) => {
+    console.log(`POST /api/panel-tasks/${req.params.id}/image called`);
+    
+    const taskId = parseInt(req.params.id);
+    
+    if (!req.file) {
+        return res.status(400).json({ error: 'No image file uploaded' });
+    }
+    
+    // Get file buffer and mimetype
+    const imageData = req.file.buffer; // This is the BLOB data
+    const imageMimetype = req.file.mimetype;
+    
+    try {
+        // Update the task with image BLOB data
+        const updateSql = `UPDATE panel_tasks 
+                          SET image_data = ?, image_mimetype = ?, image_date = NOW() 
+                          WHERE id = ?`;
+        
+        await pool.execute(updateSql, [imageData, imageMimetype, taskId]);
+        
+        // Fetch and return the updated task
+        const selectSql = 'SELECT * FROM panel_tasks WHERE id = ?';
+        const [rows] = await pool.execute(selectSql, [taskId]);
+        
+        if (rows.length === 0) {
+            return res.status(404).json({ error: 'Task not found' });
+        }
+        
+        res.json(formatTask(rows[0]));
+    } catch (err) {
+        console.error('Error uploading image:', err);
+        return res.status(500).json({ error: 'Failed to upload image' });
+    }
+});
+
+// =========================================================
+// DELETE /api/panel-tasks/:id/image - Delete image BLOB
+// =========================================================
+router.delete('/:id/image', async (req, res) => {
+    console.log(`DELETE /api/panel-tasks/${req.params.id}/image called`);
+    
+    const taskId = parseInt(req.params.id);
+    
+    try {
+        // Check if task exists
+        const [existingRows] = await pool.execute(
+            'SELECT id FROM panel_tasks WHERE id = ?', 
+            [taskId]
+        );
+        
+        if (existingRows.length === 0) {
+            return res.status(404).json({ error: 'Task not found' });
+        }
+        
+        // Update the task to remove image BLOB data
+        const updateSql = `UPDATE panel_tasks 
+                          SET image_data = NULL, image_mimetype = NULL, image_date = NULL 
+                          WHERE id = ?`;
+        
+        await pool.execute(updateSql, [taskId]);
+        
+        // Fetch and return the updated task
+        const selectSql = 'SELECT * FROM panel_tasks WHERE id = ?';
+        const [rows] = await pool.execute(selectSql, [taskId]);
+        
+        res.json(formatTask(rows[0]));
+    } catch (err) {
+        console.error('Error deleting image:', err);
+        return res.status(500).json({ error: 'Failed to delete image' });
+    }
+});
+
+// =========================================================
+// POST /api/panel-tasks/:id/media - Upload both signature and image in one request
+// =========================================================
+router.post('/:id/media', upload.fields([
+    { name: 'signature', maxCount: 1 },
+    { name: 'image', maxCount: 1 }
+]), async (req, res) => {
+    console.log(`POST /api/panel-tasks/${req.params.id}/media called`);
+
+    const taskId = parseInt(req.params.id);
+    const files = req.files; // { signature?: [file], image?: [file] }
+
+    // Ensure at least one file is provided
+    if (!files || (!files.signature && !files.image)) {
+        return res.status(400).json({ error: 'At least one file (signature or image) must be uploaded' });
+    }
+
+    try {
+        // Dynamically build the SET clause and values based on which files are present
+        const setClauses = [];
+        const values = [];
+
+        if (files.signature) {
+            const signatureFile = files.signature[0];
+            console.log('Signature file details:', {
+                fieldname: signatureFile.fieldname,
+                originalname: signatureFile.originalname,
+                mimetype: signatureFile.mimetype,
+                size: signatureFile.size,
+            });
+            setClauses.push('signature_data = ?, signature_mimetype = ?, signature_date = NOW()');
+            values.push(signatureFile.buffer, signatureFile.mimetype);
+        }
+
+        if (files.image) {
+            const imageFile = files.image[0];
+            console.log('Image file details:', {
+                fieldname: imageFile.fieldname,
+                originalname: imageFile.originalname,
+                mimetype: imageFile.mimetype,
+                size: imageFile.size,
+            });
+            setClauses.push('image_data = ?, image_mimetype = ?, image_date = NOW()');
+            values.push(imageFile.buffer, imageFile.mimetype);
+        }
+
+        const updateSql = `UPDATE panel_tasks SET ${setClauses.join(', ')} WHERE id = ?`;
+        values.push(taskId);
+
+        await pool.execute(updateSql, values);
+
+        // Fetch and return the updated task
+        const selectSql = 'SELECT * FROM panel_tasks WHERE id = ?';
+        const [rows] = await pool.execute(selectSql, [taskId]);
+
+        if (rows.length === 0) {
+            return res.status(404).json({ error: 'Task not found' });
+        }
+
+        res.json(formatTask(rows[0]));
+    } catch (err) {
+        console.error('Error uploading media:', err);
+        return res.status(500).json({ error: 'Failed to upload media' });
     }
 });
 

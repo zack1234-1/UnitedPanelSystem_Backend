@@ -2,12 +2,9 @@ const express = require('express');
 const router = express.Router();
 const pool = require('../db/connection'); 
 const { updateProjectCounts } = require('./projectUpdater');
-const multer = require('multer'); // <--- Import the update utility
-
+const multer = require('multer');
 // Define the specific task type for this router's database columns
-// **CHANGE: TASK_TYPE_PREFIX**
-const TASK_TYPE_PREFIX = 'system'; 
-
+const TASK_TYPE_PREFIX = 'transportation'; 
 const upload = multer({
     storage: multer.memoryStorage(),
     limits: { fileSize: 5 * 1024 * 1024 },
@@ -22,7 +19,7 @@ const upload = multer({
     }
 });
 
-// Utility function (updated with project_no)
+// Utility function
 const formatTask = (task) => {
     const result = {
         id: task.id,
@@ -45,15 +42,12 @@ const formatTask = (task) => {
     return result;
 };
 
-
 // =========================================================
-// GET /api/system-tasks - Get all system tasks
-// **CHANGE: Endpoint & Table Name**
+// GET /api/transportation-tasks - Get all transportation tasks
 // =========================================================
 router.get('/', async (req, res) => {
-    // 🚨 FIX: The string value 'Approved' must be wrapped in single quotes within the SQL query.
     const query = `
-        SELECT * FROM system_tasks 
+        SELECT * FROM transportation_tasks 
         WHERE approve_status = 'Approved' 
         ORDER BY created_at DESC
     `;
@@ -63,14 +57,13 @@ router.get('/', async (req, res) => {
         const tasks = results.map(formatTask);
         res.json(tasks);
     } catch (err) {
-        console.error('Error fetching approved system tasks:', err);
-        return res.status(500).json({ error: 'Failed to fetch approved system tasks' });
+        console.error('Error fetching approved transportation tasks:', err);
+        return res.status(500).json({ error: 'Failed to fetch approved transportation tasks' });
     }
 });
 
 // =========================================================
-// POST /api/system-tasks - Create (Increments total_system)
-// **CHANGE: Table Name & Task Prefix for updateProjectCounts**
+// POST /api/transportation-tasks - Create (Increments total_transportation)
 // =========================================================
 router.post('/', async (req, res) => {
     const { title, description, priority, status, project_no, due_date } = req.body;
@@ -88,7 +81,7 @@ router.post('/', async (req, res) => {
     const sanitizedDueDate = due_date === undefined || due_date === '' ? null : due_date;
     const initialStatus = status || 'pending'; // Default status
 
-    const insertSql = `INSERT INTO system_tasks (title, description, priority, status, project_no, due_date) 
+    const insertSql = `INSERT INTO transportation_tasks (title, description, priority, status, project_no, due_date) 
                        VALUES (?, ?, ?, ?, ?, ?)`;
     
     try {
@@ -103,16 +96,16 @@ router.post('/', async (req, res) => {
         ]);
         const insertId = insertResults.insertId;
 
-        // 2. Update project counts: Increment total_system
+        // 2. Update project counts: Increment total_transportation
         await updateProjectCounts(project_no, TASK_TYPE_PREFIX, 'total', 1);
 
-        // 3. If the task is created as 'completed', also increment completed_system
+        // 3. If the task is created as 'completed', also increment completed_transportation
         if (initialStatus.toLowerCase() === 'completed') {
             await updateProjectCounts(project_no, TASK_TYPE_PREFIX, 'completed', 1);
         }
         
         // 4. Fetch and return the newly created task
-        const selectSql = 'SELECT * FROM system_tasks WHERE id = ?';
+        const selectSql = 'SELECT * FROM transportation_tasks WHERE id = ?';
         const [rows] = await pool.execute(selectSql, [insertId]);
         
         if (rows.length === 0) {
@@ -121,14 +114,13 @@ router.post('/', async (req, res) => {
         
         res.status(201).json(formatTask(rows[0]));
     } catch (err) {
-        console.error('Error creating system task or updating project counts:', err);
-        return res.status(500).json({ error: 'Failed to create system task' });
+        console.error('Error creating transportation task or updating project counts:', err);
+        return res.status(500).json({ error: 'Failed to create transportation task' });
     }
 });
 
 // =========================================================
-// PATCH /api/system-tasks/:id - Update (Handles status change)
-// **CHANGE: Table Name & Task Prefix for updateProjectCounts**
+// PATCH /api/transportation-tasks/:id - Update (Handles status change)
 // =========================================================
 router.patch('/:id', async (req, res) => {
     const taskId = parseInt(req.params.id);
@@ -142,7 +134,7 @@ router.patch('/:id', async (req, res) => {
 
     try {
         // 1. Fetch the existing task status and project number BEFORE updating
-        const [existingRows] = await pool.execute('SELECT project_no, status FROM system_tasks WHERE id = ?', [taskId]);
+        const [existingRows] = await pool.execute('SELECT project_no, status FROM transportation_tasks WHERE id = ?', [taskId]);
         if (existingRows.length === 0) {
             return res.status(404).json({ error: 'Task not found' });
         }
@@ -152,7 +144,7 @@ router.patch('/:id', async (req, res) => {
         return res.status(500).json({ error: 'Database error before update' });
     }
     
-    // --- Dynamic UPDATE Query Construction (Existing Logic) ---
+    // --- Dynamic UPDATE Query Construction ---
     const allowedFields = ['title', 'description', 'priority', 'status', 'project_no', 'due_date'];
     const fieldsToUpdate = [];
     const updateValues = [];
@@ -173,7 +165,7 @@ router.patch('/:id', async (req, res) => {
     }
 
     const setClause = fieldsToUpdate.join(', ');
-    const updateSql = `UPDATE system_tasks SET ${setClause} WHERE id = ?`;
+    const updateSql = `UPDATE transportation_tasks SET ${setClause} WHERE id = ?`;
     const finalBindValues = [...updateValues, taskId];
 
     try {
@@ -184,29 +176,28 @@ router.patch('/:id', async (req, res) => {
         const newStatus = updates.status ? updates.status.toLowerCase() : previousTask.status.toLowerCase();
         const oldStatus = previousTask.status.toLowerCase();
 
-        // Check for transition to 'completed' (+1 to completed_system)
+        // Check for transition to 'completed' (+1 to completed_transportation)
         if (newStatus === 'completed' && oldStatus !== 'completed') {
             await updateProjectCounts(previousTask.project_no, TASK_TYPE_PREFIX, 'completed', 1);
         } 
-        // Check for transition away from 'completed' (-1 to completed_system)
+        // Check for transition away from 'completed' (-1 to completed_transportation)
         else if (newStatus !== 'completed' && oldStatus === 'completed') {
             await updateProjectCounts(previousTask.project_no, TASK_TYPE_PREFIX, 'completed', -1);
         }
 
         // 4. Fetch and return the updated row
-        const selectSql = 'SELECT * FROM system_tasks WHERE id = ?';
+        const selectSql = 'SELECT * FROM transportation_tasks WHERE id = ?';
         const [rows] = await pool.execute(selectSql, [taskId]);
 
         res.json(formatTask(rows[0]));
     } catch (err) {
-        console.error('Error updating system task or project counts:', err);
-        return res.status(500).json({ error: 'Failed to update system task' });
+        console.error('Error updating transportation task or project counts:', err);
+        return res.status(500).json({ error: 'Failed to update transportation task' });
     }
 });
 
 // =========================================================
-// DELETE /api/system-tasks/:id - Delete (Decrements total/completed_system)
-// **CHANGE: Table Name & Task Prefix for updateProjectCounts**
+// DELETE /api/transportation-tasks/:id - Delete (Decrements total/completed_transportation)
 // =========================================================
 router.delete('/:id', async (req, res) => {
     const taskId = parseInt(req.params.id);
@@ -215,40 +206,43 @@ router.delete('/:id', async (req, res) => {
 
     try {
         // 1. Fetch the task's project number and status BEFORE deletion
-        const [existingRows] = await pool.execute('SELECT project_no, status FROM system_tasks WHERE id = ?', [taskId]);
+        const [existingRows] = await pool.execute('SELECT project_no, status FROM transportation_tasks WHERE id = ?', [taskId]);
         if (existingRows.length === 0) {
             return res.status(404).json({ error: 'Task not found' });
         }
         taskToDelete = existingRows[0];
         
         // 2. Delete the task
-        const deleteSql = 'DELETE FROM system_tasks WHERE id = ?';
+        const deleteSql = 'DELETE FROM transportation_tasks WHERE id = ?';
         const [results] = await pool.execute(deleteSql, [taskId]);
         
         if (results.affectedRows === 0) {
             return res.status(404).json({ error: 'Task not found' });
         }
 
-        // 3. Update project counts: Decrement total_system
+        // 3. Update project counts: Decrement total_transportation
         await updateProjectCounts(taskToDelete.project_no, TASK_TYPE_PREFIX, 'total', -1);
         
-        // 4. If the deleted task was 'completed', also decrement completed_system
+        // 4. If the deleted task was 'completed', also decrement completed_transportation
         if (taskToDelete.status.toLowerCase() === 'completed') {
             await updateProjectCounts(taskToDelete.project_no, TASK_TYPE_PREFIX, 'completed', -1);
         }
         
         res.status(200).json({ message: 'Task deleted successfully' });
     } catch (err) {
-        console.error('Error deleting system task or updating project counts:', err);
-        return res.status(500).json({ error: 'Failed to delete system task' });
+        console.error('Error deleting transportation task or updating project counts:', err);
+        return res.status(500).json({ error: 'Failed to delete transportation task' });
     }
 });
 
+// =========================================================
+// POST /api/panel-tasks/:id/media - Upload both signature and image in one request
+// =========================================================
 router.post('/:id/media', upload.fields([
     { name: 'signature', maxCount: 1 },
     { name: 'image', maxCount: 1 }
 ]), async (req, res) => {
-    console.log(`POST /api/system_tasks/${req.params.id}/media called`);
+    console.log(`POST /api/transportation-tasks/${req.params.id}/media called`);
 
     const taskId = parseInt(req.params.id);
     const files = req.files; // { signature?: [file], image?: [file] }
@@ -287,13 +281,13 @@ router.post('/:id/media', upload.fields([
             values.push(imageFile.buffer, imageFile.mimetype);
         }
 
-        const updateSql = `UPDATE system_tasks SET ${setClauses.join(', ')} WHERE id = ?`;
+        const updateSql = `UPDATE transportation_tasks SET ${setClauses.join(', ')} WHERE id = ?`;
         values.push(taskId);
 
         await pool.execute(updateSql, values);
 
         // Fetch and return the updated task
-        const selectSql = 'SELECT * FROM system_tasks WHERE id = ?';
+        const selectSql = 'SELECT * FROM transportation_tasks WHERE id = ?';
         const [rows] = await pool.execute(selectSql, [taskId]);
 
         if (rows.length === 0) {

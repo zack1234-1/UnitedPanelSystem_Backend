@@ -1,22 +1,48 @@
 const express = require('express');
 const router = express.Router();
 const pool = require('../db/connection'); 
-const { updateProjectCounts } = require('./projectUpdater'); // <--- Import the update utility
+const { updateProjectCounts } = require('./projectUpdater');
+const multer = require('multer'); // <--- Import the update utility
 
 // Define the specific task type for this router's database columns
 const TASK_TYPE_PREFIX = 'door'; 
 
-// Utility function (updated with project_no)
-const formatTask = (task) => ({
-    id: task.id,
-    title: task.title,
-    description: task.description,
-    priority: task.priority,
-    status: task.status,
-    projectNo: task.project_no,
-    dueDate: task.due_date, 
-    createdAt: task.created_at
+const upload = multer({
+    storage: multer.memoryStorage(),
+    limits: { fileSize: 5 * 1024 * 1024 },
+    fileFilter: (req, file, cb) => {
+        const allowedTypes = /jpeg|jpg|png|gif|webp/;
+        const mimetype = allowedTypes.test(file.mimetype);
+        if (mimetype) {
+            return cb(null, true);
+        } else {
+            cb(new Error('Only image files are allowed!'));
+        }
+    }
 });
+
+// Utility function (updated with project_no)
+const formatTask = (task) => {
+    const result = {
+        id: task.id,
+        title: task.title,
+        description: task.description,
+        priority: task.priority,
+        status: task.status,
+        projectNo: task.project_no,
+        dueDate: task.due_date,
+        createdAt: task.created_at,
+        signatureDate: task.signature_date,
+        imageDate: task.image_date
+    };
+    if (task.signature_data && task.signature_mimetype) {
+        result.signatureUrl = `data:${task.signature_mimetype};base64,${task.signature_data.toString('base64')}`;
+    }
+    if (task.image_data && task.image_mimetype) {
+        result.imageUrl = `data:${task.image_mimetype};base64,${task.image_data.toString('base64')}`;
+    }
+    return result;
+};
 
 // =========================================================
 // GET /api/door-tasks - Get all door tasks
@@ -212,5 +238,72 @@ router.delete('/:id', async (req, res) => {
         return res.status(500).json({ error: 'Failed to delete door task' });
     }
 });
+
+// =========================================================
+// POST /api/panel-tasks/:id/media - Upload both signature and image in one request
+// =========================================================
+router.post('/:id/media', upload.fields([
+    { name: 'signature', maxCount: 1 },
+    { name: 'image', maxCount: 1 }
+]), async (req, res) => {
+    console.log(`POST /api/door_tasks/${req.params.id}/media called`);
+
+    const taskId = parseInt(req.params.id);
+    const files = req.files; // { signature?: [file], image?: [file] }
+
+    // Ensure at least one file is provided
+    if (!files || (!files.signature && !files.image)) {
+        return res.status(400).json({ error: 'At least one file (signature or image) must be uploaded' });
+    }
+
+    try {
+        // Dynamically build the SET clause and values based on which files are present
+        const setClauses = [];
+        const values = [];
+
+        if (files.signature) {
+            const signatureFile = files.signature[0];
+            console.log('Signature file details:', {
+                fieldname: signatureFile.fieldname,
+                originalname: signatureFile.originalname,
+                mimetype: signatureFile.mimetype,
+                size: signatureFile.size,
+            });
+            setClauses.push('signature_data = ?, signature_mimetype = ?, signature_date = NOW()');
+            values.push(signatureFile.buffer, signatureFile.mimetype);
+        }
+
+        if (files.image) {
+            const imageFile = files.image[0];
+            console.log('Image file details:', {
+                fieldname: imageFile.fieldname,
+                originalname: imageFile.originalname,
+                mimetype: imageFile.mimetype,
+                size: imageFile.size,
+            });
+            setClauses.push('image_data = ?, image_mimetype = ?, image_date = NOW()');
+            values.push(imageFile.buffer, imageFile.mimetype);
+        }
+
+        const updateSql = `UPDATE door_tasks SET ${setClauses.join(', ')} WHERE id = ?`;
+        values.push(taskId);
+
+        await pool.execute(updateSql, values);
+
+        // Fetch and return the updated task
+        const selectSql = 'SELECT * FROM door_tasks WHERE id = ?';
+        const [rows] = await pool.execute(selectSql, [taskId]);
+
+        if (rows.length === 0) {
+            return res.status(404).json({ error: 'Task not found' });
+        }
+
+        res.json(formatTask(rows[0]));
+    } catch (err) {
+        console.error('Error uploading media:', err);
+        return res.status(500).json({ error: 'Failed to upload media' });
+    }
+});
+
 
 module.exports = router;
