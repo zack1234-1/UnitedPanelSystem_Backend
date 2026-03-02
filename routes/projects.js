@@ -876,14 +876,13 @@ router.put('/:id', async (req, res) => {
     }
 });
 
-// --- DELETE /api/projects/:id: Delete a project AND all associated files ---
 router.delete('/:id', async (req, res) => {
-    const { id } = req.params; 
+    const { id } = req.params;
 
-    // List of all task tables to delete from
+    // All task tables that might reference the project by project_no
     const taskTables = [
         'panel_tasks',
-        'cutting_tasks', 
+        'cutting_tasks',
         'door_tasks',
         'strip_curtain_tasks',
         'accessories_tasks',
@@ -892,168 +891,144 @@ router.delete('/:id', async (req, res) => {
         'quotation_tasks'
     ];
 
-    // Get database connection for transaction
-    const connection = await db.getConnection();
-    
+    let connection;
     try {
+        connection = await db.getConnection();
         await connection.beginTransaction();
 
         console.log(`🗑️ Starting deletion of project ID: ${id}`);
 
-        // 1. Get the project details before deletion
-        const [projectResult] = await connection.query(
-            'SELECT id, projectNo, customer FROM projects WHERE id = ?', 
+        // 1. Get project details (needed for later deletions and logging)
+        const [projectRows] = await connection.query(
+            'SELECT id, projectNo, customer FROM projects WHERE id = ?',
             [id]
         );
-        
-        if (projectResult.length === 0) {
+        if (projectRows.length === 0) {
             await connection.rollback();
             connection.release();
-            console.log(`❌ Project not found with ID: ${id}`);
-            return res.status(404).json({ 
+            return res.status(404).json({
                 error: 'Project not found with that ID.',
-                projectId: id 
+                projectId: id
             });
         }
-        
-        const { projectNo, customer } = projectResult[0];
-        
-        console.log(`📊 Project to delete: ${projectNo} (Customer: ${customer})`);
+        const { projectNo, customer } = projectRows[0];
 
-        // 2. Delete all associated files from project_files table
-        console.log(`🗂️ Deleting associated files for project ${projectNo}...`);
-        const [fileDeleteResult] = await connection.query(
-            'DELETE FROM project_files WHERE projectNo = ?', 
+        // 2. Delete all files from project_files (matches column name projectNo)
+        console.log(`🗂️ Deleting files for project ${projectNo} from project_files...`);
+        const [fileResult] = await connection.query(
+            'DELETE FROM project_files WHERE projectNo = ?',
             [projectNo]
         );
-        console.log(`✅ Deleted ${fileDeleteResult.affectedRows} file(s) from project_files`);
+        console.log(`✅ Deleted ${fileResult.affectedRows} file(s) from project_files`);
 
-        // 3. Delete tasks from ALL category task tables
-        console.log(`📋 Deleting tasks from all category tables...`);
+        // 3. Delete tasks from all category tables (if they exist)
         let totalTasksDeleted = 0;
-        
         for (const table of taskTables) {
             try {
-                // Check if table exists
-                const [tableExists] = await connection.query(
-                    `SELECT COUNT(*) as count FROM information_schema.tables 
+                // Check if table exists (optional but safe)
+                const [tableCheck] = await connection.query(
+                    `SELECT COUNT(*) as cnt FROM information_schema.tables 
                      WHERE table_schema = DATABASE() AND table_name = ?`,
                     [table]
                 );
-                
-                if (tableExists[0].count > 0) {
-                    const [deleteResult] = await connection.query(
+                if (tableCheck[0].cnt > 0) {
+                    const [taskResult] = await connection.query(
                         `DELETE FROM ${table} WHERE project_no = ?`,
                         [projectNo]
                     );
-                    
-                    if (deleteResult.affectedRows > 0) {
-                        console.log(`   ✅ Deleted ${deleteResult.affectedRows} task(s) from ${table}`);
-                        totalTasksDeleted += deleteResult.affectedRows;
+                    if (taskResult.affectedRows > 0) {
+                        console.log(`   ✅ Deleted ${taskResult.affectedRows} from ${table}`);
+                        totalTasksDeleted += taskResult.affectedRows;
                     }
                 } else {
-                    console.log(`   ℹ️ Table ${table} doesn't exist, skipping`);
+                    console.log(`   ℹ️ Table ${table} does not exist, skipping`);
                 }
-            } catch (tableError) {
-                console.warn(`   ⚠️ Error deleting from ${table}:`, tableError.message);
-                // Continue with other tables even if one fails
+            } catch (tableErr) {
+                console.warn(`   ⚠️ Error deleting from ${table}:`, tableErr.message);
+                // Continue with other tables
             }
         }
-        
-        console.log(`✅ Total tasks deleted: ${totalTasksDeleted} from ${taskTables.length} tables`);
 
-        // 4. Delete from job_ledger table if exists
+        // 4. Delete from job_ledger (optional)
         try {
-            const [jobLedgerResult] = await connection.query(
+            const [ledgerResult] = await connection.query(
                 'DELETE FROM job_ledger WHERE Job_No = ?',
                 [projectNo]
             );
-            if (jobLedgerResult.affectedRows > 0) {
-                console.log(`✅ Deleted ${jobLedgerResult.affectedRows} record(s) from job_ledger`);
+            if (ledgerResult.affectedRows > 0) {
+                console.log(`✅ Deleted ${ledgerResult.affectedRows} record(s) from job_ledger`);
             }
-        } catch (ledgerError) {
-            console.log(`ℹ️ job_ledger table doesn't exist or error: ${ledgerError.message}`);
+        } catch (ledgerErr) {
+            console.log(`ℹ️ job_ledger table error (may not exist):`, ledgerErr.message);
         }
 
-        // 5. Delete from activity_logs related to this project
+        // 5. Delete activity logs linked to this project
         try {
-            const [logsDeleteResult] = await connection.query(
+            const [logsResult] = await connection.query(
                 'DELETE FROM activity_logs WHERE resource_id = ? AND resource_type = "PROJECT"',
                 [id]
             );
-            if (logsDeleteResult.affectedRows > 0) {
-                console.log(`✅ Deleted ${logsDeleteResult.affectedRows} activity log(s) for project`);
+            if (logsResult.affectedRows > 0) {
+                console.log(`✅ Deleted ${logsResult.affectedRows} activity log(s)`);
             }
-        } catch (logsError) {
-            console.log(`ℹ️ Error deleting activity logs: ${logsError.message}`);
+        } catch (logsErr) {
+            console.log(`ℹ️ activity_logs table error:`, logsErr.message);
         }
 
-        // 6. Finally, delete the project from projects table
-        console.log(`🏗️ Deleting project from projects table...`);
-        const [projectDeleteResult] = await connection.query(
+        // 6. Finally delete the project itself
+        const [projectResult] = await connection.query(
             'DELETE FROM projects WHERE id = ?',
             [id]
         );
-
-        if (projectDeleteResult.affectedRows === 0) {
+        if (projectResult.affectedRows === 0) {
             await connection.rollback();
             connection.release();
-            console.log(`❌ Failed to delete project from projects table`);
-            return res.status(500).json({ 
+            return res.status(500).json({
                 error: 'Failed to delete project from database.',
-                projectId: id 
+                projectId: id
             });
         }
 
-        console.log(`✅ Successfully deleted project ${projectNo} from projects table`);
-
-        // 7. Commit the transaction
+        // 7. Commit transaction
         await connection.commit();
-        console.log(`✅ Transaction committed successfully`);
+        console.log(`✅ Transaction committed. Project ${projectNo} deleted.`);
 
-        // 8. Log the project deletion (outside transaction since logging should not fail the operation)
+        // 8. Log the deletion (outside transaction to avoid rollback on log failure)
         try {
             await logActivity(
-                'DELETE', 
-                'PROJECT', 
-                id, 
-                `Project ${projectNo} for ${customer} deleted with all associated files and tasks.`,
-                { 
-                    projectNo: projectNo, 
-                    customer: customer,
-                    filesDeleted: fileDeleteResult.affectedRows,
+                'DELETE',
+                'PROJECT',
+                id,
+                `Project ${projectNo} (${customer}) deleted with ${fileResult.affectedRows} files and ${totalTasksDeleted} tasks.`,
+                {
+                    projectNo,
+                    customer,
+                    filesDeleted: fileResult.affectedRows,
                     tasksDeleted: totalTasksDeleted,
-                    taskTables: taskTables
+                    taskTables
                 }
             );
-            console.log(`📝 Activity logged successfully`);
-        } catch (logError) {
-            console.warn(`⚠️ Failed to log activity:`, logError.message);
-            // Don't fail the response if logging fails
+        } catch (logErr) {
+            console.warn('⚠️ Failed to log activity:', logErr.message);
         }
-        
-        // 9. Prepare success response
-        const successMessage = `Project ${projectNo} (${customer}) deleted successfully. ` +
-                              `Removed ${fileDeleteResult.affectedRows} files and ${totalTasksDeleted} tasks.`;
-        
-        console.log(`🎉 ${successMessage}`);
-        
-        res.status(200).json({ 
+
+        // 9. Send success response
+        res.status(200).json({
             success: true,
-            message: successMessage,
-            projectNo: projectNo,
-            customer: customer,
-            deletedFiles: fileDeleteResult.affectedRows,
+            message: `Project ${projectNo} (${customer}) deleted successfully. Removed ${fileResult.affectedRows} files and ${totalTasksDeleted} tasks.`,
+            projectNo,
+            customer,
+            deletedFiles: fileResult.affectedRows,
             deletedTasks: totalTasksDeleted,
-            taskTables: taskTables,
             timestamp: new Date().toISOString()
         });
 
     } catch (err) {
-        // 10. Rollback on any error
-        await connection.rollback();
-        console.error('❌ Error in project deletion transaction:', err);
-        
+        if (connection) {
+            await connection.rollback();
+            connection.release();
+        }
+        console.error('❌ Error in project deletion:', err);
         res.status(500).json({
             error: 'Failed to delete project and all associated data.',
             details: err.message,
@@ -1061,9 +1036,7 @@ router.delete('/:id', async (req, res) => {
             timestamp: new Date().toISOString()
         });
     } finally {
-        // Always release the connection
-        connection.release();
-        console.log(`🔗 Database connection released`);
+        if (connection) connection.release();
     }
 });
 // FIXED: This route should return an array, not an object

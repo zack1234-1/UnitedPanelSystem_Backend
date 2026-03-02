@@ -626,6 +626,7 @@ router.post('/:panelId/production-with-balance', async (req, res) => {
         }
         
         const panelsToProduce = parseInt(number_of_panels);
+        const now = new Date(); // current timestamp for created_at and updated_at
         
         const result = await executeTransaction(async (connection) => {
             // Check if panel exists and get current balance
@@ -655,12 +656,12 @@ router.post('/:panelId/production-with-balance', async (req, res) => {
                 [newBalance, panelId]
             );
             
-            // Insert production record with balance_after field
+            // Insert production record with all values as placeholders (including timestamps)
             const query = `
-                INSERT INTO production_records 
+                INSERT INTO production_records
                 (panel_id, reference_number, job_no, brand, estimated_delivery, 
-                 delivery_date, number_of_panels, notes, status, balance_after)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                 delivery_date, number_of_panels, notes, status, balance_after, created_at, updated_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             `;
             
             const [insertResult] = await connection.execute(query, [
@@ -669,12 +670,13 @@ router.post('/:panelId/production-with-balance', async (req, res) => {
                 job_no || panelData.job_no || null,
                 brand || null,
                 panelData.estimated_delivery || null,
-                delivery_date || null,
+                delivery_date || null,   // Note: delivery_date is kept as provided; if you want it to default to now, change to now
                 panelsToProduce,
                 notes || null,
                 status || 'pending',
-                newBalance
-                // Removed extra parameters: panelData.reference_number, width, length
+                newBalance,
+                now,    // created_at
+                now     // updated_at
             ]);
             
             // Get the created record
@@ -1232,6 +1234,104 @@ router.get('/production-records/all', async (req, res) => {
         console.error('Error fetching production records:', error);
         res.status(500).json({ 
             error: 'Failed to fetch production records',
+            details: error.message 
+        });
+    }
+});
+
+// GET /api/panels/production-records/by-date?date=YYYY-MM-DD
+router.get('/production-records/by-date', async (req, res) => {
+    try {
+        const { date } = req.query;
+        if (!date) {
+            return res.status(400).json({ error: 'Date query parameter is required (YYYY-MM-DD)' });
+        }
+
+        // Basic date format validation
+        if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) {
+            return res.status(400).json({ error: 'Invalid date format. Use YYYY-MM-DD' });
+        }
+
+        const query = `
+            SELECT 
+                pr.*,
+                p.id as panel_table_id,
+                p.reference_number as panel_reference_number,
+                p.job_no as panel_job_no,
+                p.length as panel_length,
+                p.width as panel_width,
+                p.type as panel_type,
+                p.panel_thk as panel_thickness,
+                p.joint as panel_joint,
+                p.surface_front,
+                p.surface_back,
+                p.surface_type,
+                p.qty as panel_qty,
+                p.balance as panel_balance,
+                p.production_meter,
+                p.salesman,
+                p.notes as panel_notes,
+                p.created_at as panel_created_at
+            FROM production_records pr
+            LEFT JOIN panels p ON pr.panel_id = p.id
+            WHERE DATE(pr.created_at) = ?
+            ORDER BY pr.created_at DESC
+        `;
+
+        const [records] = await db.execute(query, [date]);
+
+        // Format response with nested panel object (same as /all endpoint)
+        const formattedRecords = records.map(record => {
+            const response = {
+                ...record,
+                panel: {
+                    id: record.panel_table_id,
+                    reference_number: record.panel_reference_number,
+                    job_no: record.panel_job_no,
+                    length: record.panel_length,
+                    width: record.panel_width,
+                    type: record.panel_type,
+                    panel_thk: record.panel_thickness,
+                    joint: record.panel_joint,
+                    surface_front: record.surface_front,
+                    surface_back: record.surface_back,
+                    surface_type: record.surface_type,
+                    qty: record.panel_qty,
+                    balance: record.panel_balance,
+                    production_meter: record.production_meter,
+                    salesman: record.salesman,
+                    notes: record.panel_notes,
+                    created_at: record.panel_created_at
+                }
+            };
+
+            // Remove flattened fields
+            delete response.panel_table_id;
+            delete response.panel_reference_number;
+            delete response.panel_job_no;
+            delete response.panel_length;
+            delete response.panel_width;
+            delete response.panel_type;
+            delete response.panel_thickness;
+            delete response.panel_joint;
+            delete response.surface_front;
+            delete response.surface_back;
+            delete response.surface_type;
+            delete response.panel_qty;
+            delete response.panel_balance;
+            delete response.production_meter;
+            delete response.salesman;
+            delete response.panel_notes;
+            delete response.panel_created_at;
+
+            return response;
+        });
+
+        res.json(formattedRecords);
+    } catch (error) {
+        console.error('Error fetching production records by date:', error);
+        res.status(500).json({ 
+            error: 'Failed to fetch production records by date',
             details: error.message 
         });
     }
