@@ -1337,4 +1337,60 @@ router.get('/production-records/by-date', async (req, res) => {
     }
 });
 
+// DELETE /api/panels/by-job/:job_no - Delete all panels with a specific job number and their production records
+router.delete('/by-job/:job_no', async (req, res) => {
+    try {
+        const { job_no } = req.params;
+
+        if (!job_no) {
+            return res.status(400).json({ error: 'Job number is required' });
+        }
+
+        const result = await executeTransaction(async (connection) => {
+            // First, get all panel IDs with this job_no
+            const [panels] = await connection.execute(
+                'SELECT id FROM panels WHERE job_no = ?',
+                [job_no]
+            );
+
+            if (panels.length === 0) {
+                throw new Error('No panels found with this job number');
+            }
+
+            const panelIds = panels.map(p => p.id);
+            const placeholders = panelIds.map(() => '?').join(',');
+
+            // Delete production records for these panels
+            const [deleteProdResult] = await connection.execute(
+                `DELETE FROM production_records WHERE job_no IN (${placeholders})`,
+                panelIds
+            );
+
+            // Delete the panels
+            const [deletePanelResult] = await connection.execute(
+                `DELETE FROM panels WHERE job_no = ?`,
+                [job_no]
+            );
+
+            return {
+                success: true,
+                message: `All panels with job number ${job_no} and their production records deleted successfully`,
+                deleted_panels: deletePanelResult.affectedRows,
+                deleted_production_records: deleteProdResult.affectedRows
+            };
+        });
+
+        res.json(result);
+    } catch (error) {
+        console.error('Error deleting panels by job number:', error);
+        if (error.message === 'No panels found with this job number') {
+            return res.status(404).json({ error: error.message });
+        }
+        res.status(500).json({ 
+            error: 'Failed to delete panels by job number',
+            details: error.message 
+        });
+    }
+});
+
 module.exports = router;
