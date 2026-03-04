@@ -62,6 +62,10 @@ app.use(cors({
     methods: ['GET', 'POST', 'PUT', 'DELETE', 'PATCH', 'OPTIONS']
 }));
 
+app.use(cors({
+  origin: 'http://localhost:3000' // Allow your React dev server
+}));
+
 // Body parsers
 app.use(express.json({ limit: '10mb' }));
 app.use(express.urlencoded({ extended: true, limit: '10mb' }));
