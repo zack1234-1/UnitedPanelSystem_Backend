@@ -38,7 +38,7 @@ envVarGroups:
       - key: API_BASE_URL
         value: https://unitedpanelsystem-backend-1.onrender.com
       - key: ALLOWED_ORIGINS
-        value: https://unitedpanelsystem-frontend1.onrender.com
+        value: https://unitedpanelsystem-frontend1.onrender.com,http://localhost:3000
 
 # Uncomment if using Render PostgreSQL
 # databases:
