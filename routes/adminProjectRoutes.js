@@ -182,10 +182,9 @@ router.post('/', async (req, res) => {
 // PUT /api/admin/jobs/:jobNo - Update Job
 router.put('/:jobNo', async (req, res) => {
     const TABLE_NAME = 'job_ledger';
-    const jobNo = req.params.jobNo;  // This is the OLD job number from URL
+    const jobNo = req.params.jobNo;
     const updates = req.body;
-    
-    // List of all related tables to update when job number changes
+
     const RELATED_TABLES = [
         'panel_tasks',
         'cutting_tasks',
@@ -195,10 +194,9 @@ router.put('/:jobNo', async (req, res) => {
         'system_tasks',
         'transportation_tasks',
         'quotation_tasks',
-        'project_files'          // Included – column name differs, handled below
+        'project_files'
     ];
-    
-    // Map each table to the correct column name for the project reference
+
     const TABLE_COLUMN_MAP = {
         'panel_tasks': 'project_no',
         'cutting_tasks': 'project_no',
@@ -208,12 +206,11 @@ router.put('/:jobNo', async (req, res) => {
         'system_tasks': 'project_no',
         'transportation_tasks': 'project_no',
         'quotation_tasks': 'project_no',
-        'project_files': 'projectNo'   // <-- different column name
+        'project_files': 'projectNo'
     };
-    
-    // Allowed fields – Job_No is now allowed for updates
+
     const allowedFields = [
-        'Job_No',                 // Allow job number to be updated
+        'Job_No',
         'Date_Entry',
         'Customer_Name',
         'Sales_Amount',
@@ -223,44 +220,36 @@ router.put('/:jobNo', async (req, res) => {
         'Remarks',
         'Signature_Data'
     ];
-    
+
     const fieldsToUpdate = [];
     const updateValues = [];
 
-    // Track if signature is being added or changed to a non-null value
     let hasNewSignature = false;
-    let newJobNo = jobNo; // Default to old job number
+    let newJobNo = jobNo;
 
     for (const field of allowedFields) {
         if (updates[field] !== undefined) {
             fieldsToUpdate.push(`${field} = ?`);
-            
+
             let value = updates[field];
-            
-            // Handle signature BLOB conversion
+
             if (field === 'Signature_Data') {
                 if (!value || value === '') {
-                    value = null; // Set to NULL in database
+                    value = null;
                 } else if (typeof value === 'string' && value.startsWith('data:image/')) {
                     const base64Data = value.replace(/^data:image\/\w+;base64,/, '');
                     value = Buffer.from(base64Data, 'base64');
-                    hasNewSignature = true; // Signature provided or updated
+                    hasNewSignature = true;
                 }
-            } 
-            // Handle Job_No update – store the new value
-            else if (field === 'Job_No') {
-                newJobNo = value; // Update newJobNo variable
-            }
-            // Handle empty strings for text/numeric fields to be NULL
-            else if (typeof value === 'string' && value.trim() === '' && 
-                     ['Customer_Name', 'Remarks'].includes(field)) {
+            } else if (field === 'Job_No') {
+                newJobNo = value;
+            } else if (typeof value === 'string' && value.trim() === '' &&
+                ['Customer_Name', 'Remarks'].includes(field)) {
                 value = null;
-            } 
-            // Handle Margin (which can be 0 or null)
-            else if (field === 'Margin' && (value === null || value === '')) {
+            } else if (field === 'Margin' && (value === null || value === '')) {
                 value = null;
             }
-            
+
             updateValues.push(value);
         }
     }
@@ -271,28 +260,27 @@ router.put('/:jobNo', async (req, res) => {
 
     const setClause = fieldsToUpdate.join(', ');
     const updateSql = `UPDATE ${TABLE_NAME} SET ${setClause} WHERE Job_No = ?`;
-    const finalBindValues = [...updateValues, jobNo]; // WHERE clause uses OLD job number
+    const finalBindValues = [...updateValues, jobNo];
 
     let connection;
     let statusUpdateMessage = '';
-    
+
     try {
         connection = await pool.getConnection();
         await connection.beginTransaction();
 
         // 1. Execute the job update
         const [result] = await connection.execute(updateSql, finalBindValues);
-        
+
         if (result.affectedRows === 0) {
             await connection.rollback();
             return res.status(404).json({ error: `Job with Job No ${jobNo} not found.` });
         }
-        
-        // 2. If job number changed, update all related tables (using correct column names)
+
+        // 2. If job number changed, update all related tables
         if (newJobNo !== jobNo) {
             console.log(`🔄 Job number changed from ${jobNo} to ${newJobNo}. Updating related tables...`);
-            
-            // Update each related table with the appropriate column name
+
             const updatePromises = RELATED_TABLES.map(table => {
                 const column = TABLE_COLUMN_MAP[table];
                 return connection.execute(
@@ -300,48 +288,60 @@ router.put('/:jobNo', async (req, res) => {
                     [newJobNo, jobNo]
                 );
             });
-            
-            // Also update the main projects table (it uses 'projectNo')
+
             updatePromises.push(
                 connection.execute(
                     `UPDATE projects SET projectNo = ? WHERE projectNo = ?`,
                     [newJobNo, jobNo]
                 )
             );
-            
-            // Wait for all updates
+
             await Promise.all(updatePromises);
-            
+
             console.log(`✅ All related tables updated with new job number ${newJobNo}`);
             statusUpdateMessage = `Job updated and job number changed from ${jobNo} to ${newJobNo}.`;
         }
-        
+
         // 3. Conditional Updates if a new signature is provided (Approval Trigger)
         if (hasNewSignature) {
             const jobNoToUse = newJobNo !== jobNo ? newJobNo : jobNo;
-            
-            // Update Project Status
-            await connection.execute(
-                `UPDATE projects SET status = 'Approved' WHERE projectNo = ?`,
+
+            // ✅ FIX: Fetch current project status before overwriting
+            const [projectRows] = await connection.execute(
+                `SELECT status FROM projects WHERE projectNo = ?`,
                 [jobNoToUse]
             );
-            console.log(`✅ Project ${jobNoToUse} status updated to Approved due to signature update`);
 
-            // Update All Category Task Statuses (exclude project_files)
-            const taskTables = RELATED_TABLES.filter(table => table !== 'project_files');
-            const statusUpdatePromises = taskTables.map(table => {
-                return connection.execute(
-                    `UPDATE ${table} 
-                     SET status = 'pending', approve_status = 'Approved' 
-                     WHERE project_no = ? AND status = 'pending'`,
+            const currentStatus = projectRows[0]?.status;
+            console.log(`ℹ️ Current project status for ${jobNoToUse}: ${currentStatus}`);
+
+            // Only update status if it's NOT already Done or Completed
+            if (currentStatus !== 'done' && currentStatus !== 'Completed') {
+                await connection.execute(
+                    `UPDATE projects SET status = 'Approved' WHERE projectNo = ?`,
                     [jobNoToUse]
                 );
-            });
-            
-            await Promise.all(statusUpdatePromises);
-            console.log(`✅ All pending tasks for project ${jobNoToUse} updated to 'approved'/'Signed'.`);
-            
-            statusUpdateMessage += ` Project status updated and all pending category tasks set to 'approved'.`;
+                console.log(`✅ Project ${jobNoToUse} status updated to Approved.`);
+
+                // Update All Category Task Statuses (exclude project_files)
+                const taskTables = RELATED_TABLES.filter(table => table !== 'project_files');
+                const statusUpdatePromises = taskTables.map(table => {
+                    return connection.execute(
+                        `UPDATE ${table} 
+                         SET approve_status = 'Approved' 
+                         WHERE project_no = ? AND status = 'pending'`,
+                        [jobNoToUse]
+                    );
+                });
+
+                await Promise.all(statusUpdatePromises);
+                console.log(`✅ All pending tasks for project ${jobNoToUse} updated to 'Approved'.`);
+
+                statusUpdateMessage += ` Project status updated and all pending category tasks set to 'Approved'.`;
+            } else {
+                console.log(`⏭️ Skipping status update — project ${jobNoToUse} is already '${currentStatus}'.`);
+                statusUpdateMessage += ` Signature saved. Project status unchanged (currently '${currentStatus}').`;
+            }
         } else {
             statusUpdateMessage = statusUpdateMessage || `Job updated successfully.`;
         }
@@ -351,22 +351,23 @@ router.put('/:jobNo', async (req, res) => {
 
         // 5. Return updated job (query with NEW job number)
         const [rows] = await pool.execute(
-            `SELECT * FROM ${TABLE_NAME} WHERE Job_No = ?`, 
-            [newJobNo] // Query with NEW job number
+            `SELECT * FROM ${TABLE_NAME} WHERE Job_No = ?`,
+            [newJobNo]
         );
-        
+
         res.json({
             job: rows[0] ? formatJob(rows[0]) : { Job_No: newJobNo },
             message: statusUpdateMessage
         });
+
     } catch (err) {
         if (connection) {
             await connection.rollback();
         }
         console.error(`Error updating job ${jobNo}:`, err);
-        return res.status(500).json({ 
+        return res.status(500).json({
             error: 'Failed to update job or associated tables.',
-            details: err.message 
+            details: err.message
         });
     } finally {
         if (connection) {

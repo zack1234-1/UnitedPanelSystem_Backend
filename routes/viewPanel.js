@@ -1337,7 +1337,7 @@ router.get('/production-records/by-date', async (req, res) => {
     }
 });
 
-// DELETE /api/panels/by-job/:job_no - Delete all panels with a specific job number and their production records
+// DELETE /api/panels/by-job/:job_no
 router.delete('/by-job/:job_no', async (req, res) => {
     try {
         const { job_no } = req.params;
@@ -1360,9 +1360,9 @@ router.delete('/by-job/:job_no', async (req, res) => {
             const panelIds = panels.map(p => p.id);
             const placeholders = panelIds.map(() => '?').join(',');
 
-            // Delete production records for these panels
+            // ✅ Delete production records using panel_id (numeric), not job_no (string)
             const [deleteProdResult] = await connection.execute(
-                `DELETE FROM production_records WHERE job_no IN (${placeholders})`,
+                `DELETE FROM production_records WHERE panel_id IN (${placeholders})`,
                 panelIds
             );
 
