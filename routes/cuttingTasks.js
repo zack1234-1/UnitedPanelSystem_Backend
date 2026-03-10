@@ -68,9 +68,8 @@ router.get('/', async (req, res) => {
 // POST /api/cutting-tasks - Create (Increments total_cutting)
 // =========================================================
 router.post('/', async (req, res) => {
-    const { title, description, priority, status, project_no, due_date,approve_status} = req.body;
+    const { title, description, priority, status, project_no, due_date, approve_status } = req.body;
     
-    // --- Validation (Existing Logic) ---
     if (!title || !title.trim()) {
         return res.status(400).json({ error: 'Title is required' });
     }
@@ -81,31 +80,28 @@ router.post('/', async (req, res) => {
     
     const initialStatus = status || 'pending';
 
+    // ✅ approve_status added to column list, all optionals sanitized to null
     const insertSql = `INSERT INTO cutting_tasks 
         (title, description, priority, status, project_no, due_date, approve_status, created_at) 
         VALUES (?, ?, ?, ?, ?, ?, ?, NOW())`;
     
     try {
-        // 1. Create the task
         const [insertResults] = await pool.execute(insertSql, [
             title, 
-            description, 
-            priority, 
+            description ?? null,        // ✅ undefined → null
+            priority ?? null,           // ✅ undefined → null
             initialStatus, 
             project_no, 
-            due_date,
-            approve_status,
+            due_date ?? null,           // ✅ undefined → null
+            approve_status ?? 'Pending' // ✅ undefined → 'Pending'
         ]);
 
-        // 2. Update project counts: Increment total_cutting
         await updateProjectCounts(project_no, TASK_TYPE_PREFIX, 'total', 1);
 
-        // 3. If the task is created as 'completed', also increment completed_cutting
         if (initialStatus.toLowerCase() === 'completed') {
             await updateProjectCounts(project_no, TASK_TYPE_PREFIX, 'completed', 1);
         }
         
-        // 4. Fetch and return the newly created task
         const [rows] = await pool.execute('SELECT * FROM cutting_tasks WHERE id = ?', [insertResults.insertId]);
         res.status(201).json(formatTask(rows[0]));
     } catch (err) {

@@ -98,8 +98,8 @@ router.post('/', async (req, res) => {
     const sanitizedDueDate = due_date === undefined || due_date === '' ? null : due_date;
     const initialStatus = status || 'pending'; // Default status
 
-    const insertSql = `INSERT INTO panel_tasks (title, description, priority, status, project_no, due_date) 
-                       VALUES (?, ?, ?, ?, ?, ?)`;
+    const insertSql = `INSERT INTO panel_tasks(title, description, priority, status, project_no, due_date, created_at) 
+                   VALUES (?, ?, ?, ?, ?, ?, NOW())`;
     
     const bindValues = [
         title, 
