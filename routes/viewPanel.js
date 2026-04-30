@@ -386,13 +386,13 @@ router.put('/:id', async (req, res) => {
             }
         }
         
-        // Define allowed fields that can be updated
-        const allowedFields = [
+       const allowedFields = [
             'reference_number', 'job_no', 'type', 'panel_thk', 'joint',
             'surface_front', 'surface_back', 'surface_front_thk', 'surface_back_thk',
             'surface_type', 'width', 'length', 'qty', 'cutting',
             'balance', 'production_meter', 'estimated_delivery',
-            'salesman', 'notes', 'status', 'application', 'created_at'
+            'salesman', 'notes', 'status', 'application', 'created_at',
+            'remaining_meter'   // <-- ADD THIS LINE
         ];
         
         // Define date fields that need special handling
@@ -427,10 +427,10 @@ router.put('/:id', async (req, res) => {
                 continue;
             }
             
-            // Handle numeric fields
-            const numericFields = [
+           const numericFields = [
                 'width', 'length', 'panel_thk', 'surface_front_thk', 
-                'surface_back_thk', 'qty', 'balance', 'production_meter'
+                'surface_back_thk', 'qty', 'balance', 'production_meter',
+                'remaining_meter'   // <-- ADD THIS LINE
             ];
             
             if (numericFields.includes(key)) {

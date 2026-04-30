@@ -454,7 +454,6 @@ router.post('/upload', upload.array('files'), async (req, res) => {
 router.delete('/file/:id', async (req, res) => {
     const fileId = req.params.id;
 
-    // Define maps for quick lookup (based on your previous logic)
     const categoryToColumn = {
         'cutting': 'total_cutting',
         'panel': 'total_panel',
@@ -478,7 +477,7 @@ router.delete('/file/:id', async (req, res) => {
     };
 
     try {
-        // 1. Get file details (name, projectNo, category, AND taskNo) BEFORE deletion
+        // 1. Get file details (name, projectNo, category, taskNo)
         const [fileInfoResult] = await db.query(
             'SELECT file_name, projectNo, category, taskNo FROM project_files WHERE id = ?', 
             [fileId]
@@ -488,28 +487,26 @@ router.delete('/file/:id', async (req, res) => {
             return res.status(404).json({ error: 'File not found.' });
         }
         
-        // Destructure all needed properties, including taskNo
         const { file_name: fileName, projectNo, category, taskNo } = fileInfoResult[0];
 
-        // 2. Delete the file record from the database
+        // 2. Delete the file record
         const [deleteResult] = await db.query('DELETE FROM project_files WHERE id = ?', [fileId]);
 
         if (deleteResult.affectedRows === 0) {
-            // This should not happen if fileInfoResult was found, but keep for robustness.
             return res.status(404).json({ error: 'File record not found for deletion.' });
         }
         
         let taskDeleted = false;
         let taskTableName = '';
+        let wasCompleted = false;
 
-        // --- Task and Project Totals Management ---
+        // 3. Handle task and project total/completed counts
         if (category) {
             const totalColumn = categoryToColumn[category];
             taskTableName = taskTableMap[category];
             
-            // A. Decrement the project's total file count
+            // A. Decrement total_* count (always, because a file contributes to total tasks)
             if (totalColumn) {
-                // Decrement the total by 1, ensuring it doesn't drop below 0
                 await db.query(
                     `UPDATE projects SET ${totalColumn} = GREATEST(0, ${totalColumn} - 1) WHERE projectNo = ?`,
                     [projectNo]
@@ -517,10 +514,17 @@ router.delete('/file/:id', async (req, res) => {
                 console.log(`Decremented ${totalColumn} file count for project ${projectNo}`);
             }
 
-            // B. Targeted Task Deletion Logic: Delete task using the stored taskNo
+            // B. Delete linked task and decrement completed_* if task was Completed/Done
             if (taskTableName && taskNo) {
-                
-                // Delete the specific task linked to this file's taskNo (which is the task's primary key)
+                // Check current status of the task before deletion
+                const [taskStatusResult] = await db.query(
+                    `SELECT status FROM ${taskTableName} WHERE id = ?`,
+                    [taskNo]
+                );
+                wasCompleted = taskStatusResult.length > 0 && 
+                    (taskStatusResult[0].status === 'Completed' || taskStatusResult[0].status === 'Done');
+
+                // Delete the task
                 const [taskDeleteResult] = await db.query(
                     `DELETE FROM ${taskTableName} WHERE id = ?`,
                     [taskNo]
@@ -529,34 +533,46 @@ router.delete('/file/:id', async (req, res) => {
                 if (taskDeleteResult.affectedRows > 0) {
                     taskDeleted = true;
                     console.log(`Successfully deleted linked task (ID: ${taskNo}) from ${taskTableName}.`);
+
+                    // If the task was completed, decrement the corresponding completed_* column
+                    if (wasCompleted && totalColumn) {
+                        const completedColumn = totalColumn.replace('total_', 'completed_');
+                        await db.query(
+                            `UPDATE projects SET ${completedColumn} = GREATEST(0, ${completedColumn} - 1) WHERE projectNo = ?`,
+                            [projectNo]
+                        );
+                        console.log(`Decremented ${completedColumn} for project ${projectNo} (task was completed).`);
+                    }
                 } else {
-                    console.log(`Warning: File was deleted, but linked task (ID: ${taskNo}) not found in ${taskTableName}.`);
+                    console.log(`Warning: File deleted, but linked task (ID: ${taskNo}) not found in ${taskTableName}.`);
                 }
             }
         }
         
-        // 4. Log the successful deletion
+        // 4. Log activity
         await logActivity(
             'DELETE', 
             'FILE', 
             fileId, 
             `Deleted file: '${fileName}' from project ${projectNo} (Category: ${category || 'N/A'}). Linked Task ID: ${taskNo || 'N/A'}.`,
-            { projectNo: projectNo, category: category, taskDeleted: taskDeleted, taskNo: taskNo }
+            { projectNo, category, taskDeleted, taskNo, wasCompleted }
         );
 
-        // 5. Prepare response
-        let responseMessage = `File deleted successfully from database. (File: ${fileName}, Category: ${category || 'N/A'})`;
+        // 5. Response
+        let responseMessage = `File deleted successfully. (File: ${fileName}, Category: ${category || 'N/A'})`;
         if (taskDeleted) {
-             responseMessage += ` The corresponding task (ID: ${taskNo}) was also deleted.`;
+            responseMessage += ` The linked task (ID: ${taskNo}) was also deleted.`;
+            if (wasCompleted) responseMessage += ` The completed count for this category was decreased.`;
         } else if (taskNo) {
-             responseMessage += ` Linked Task ID ${taskNo} was provided but could not be deleted (may have been deleted previously).`;
+            responseMessage += ` Linked Task ID ${taskNo} was not found for deletion.`;
         }
 
         res.status(200).json({ 
             message: responseMessage,
-            fileId: fileId,
-            taskDeleted: taskDeleted,
-            taskNo: taskNo
+            fileId,
+            taskDeleted,
+            taskNo,
+            wasCompleted
         });
 
     } catch (err) {
@@ -567,7 +583,6 @@ router.delete('/file/:id', async (req, res) => {
         });
     }
 });
-
 // =========================================================
 // 📋 PROJECT ROUTES (CRUD) WITH STATUS SUPPORT
 // =========================================================
