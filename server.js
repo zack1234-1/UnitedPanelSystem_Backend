@@ -1,38 +1,29 @@
-// server.js - FIXED VERSION
 require('dotenv').config();
 
 const express = require('express');
 const cors = require('cors');
+const http = require('http');
+const { Server } = require('socket.io');
 const path = require('path');
+const fs = require('fs');
 
-// Import routes with error handling
+// ---------- Routes (optional modules) ----------
 let projectRoutes, panelTasksRoutes, doorTasksRouter, accessoriesTasksRouter, cuttingTasksRouter;
 let stripCurtainTasksRouter, systemTasksRouter, adminProjectRoutes, activityLogsRouter;
 let subTasksRouter, orderRouter, excelDataRouter, panelsRouter;
-let transportationTasksRouter; // Added transportation router
+let transportationTasksRouter, stockRoutes, inventoryRouter, aiRouter;
 
-// Helper function to load modules safely
 function loadModule(modulePath, fallbackName) {
     try {
         return require(modulePath);
     } catch (error) {
         console.warn(`⚠️ Could not load ${fallbackName || modulePath}:`, error.message);
-        // Return a basic router as fallback
         const router = require('express').Router();
-        router.get('/', (req, res) => {
-            res.json({ 
-                message: `${fallbackName || 'Module'} is not configured`,
-                status: 'module_not_found'
-            });
-        });
-        router.get('/health', (req, res) => {
-            res.json({ status: 'module_not_available' });
-        });
+        router.get('/', (req, res) => res.json({ message: `${fallbackName || 'Module'} not configured`, status: 'module_not_found' }));
         return router;
     }
 }
 
-// Load routes
 projectRoutes = loadModule('./routes/projects', 'projectRoutes');
 panelTasksRoutes = loadModule('./routes/panelTasks', 'panelTasks');
 doorTasksRouter = loadModule('./routes/doorTasks', 'doorTasks');
@@ -46,74 +37,112 @@ subTasksRouter = loadModule('./routes/subtasks', 'subtasks');
 orderRouter = loadModule('./routes/orders', 'orders');
 excelDataRouter = loadModule('./routes/excelData', 'excelData');
 panelsRouter = loadModule('./routes/viewPanel', 'panels');
-transportationTasksRouter = loadModule('./routes/transportationTasks', 'transportationTasks'); // Added
+transportationTasksRouter = loadModule('./routes/transportationTasks', 'transportationTasks');
+stockRoutes = loadModule('./routes/stock', 'stock');
 
+// Inventory router with fallback
+const inventoryFileCandidates = ['./routes/doorInventory', './routes/inventory'];
+for (const filePath of inventoryFileCandidates) {
+    const fullPath = path.join(__dirname, filePath + '.js');
+    if (fs.existsSync(fullPath)) {
+        try {
+            inventoryRouter = require(filePath);
+            console.log(`✅ Inventory router loaded from ${filePath}.js`);
+            break;
+        } catch (err) {
+            console.error(`❌ Failed to load ${filePath}.js:`, err.message);
+        }
+    }
+}
+if (!inventoryRouter) {
+    console.error('❌ No inventory router found. Mounting dummy router.');
+    inventoryRouter = express.Router();
+    inventoryRouter.all('*', (req, res) => {
+        res.status(503).json({ error: 'Inventory service unavailable' });
+    });
+}
+
+// AI router
+aiRouter = require('./routes/aiRouter');
+
+// ---------- Auth & Middleware ----------
+const authRoutes = require('./routes/authRoutes');
+const authMiddleware = require('./middleware/auth');
+
+// ---------- Express app ----------
 const app = express();
+const server = http.createServer(app);
+const io = new Server(server, {
+    cors: {
+        origin: process.env.NODE_ENV === 'production' 
+            ? (process.env.ALLOWED_ORIGINS ? process.env.ALLOWED_ORIGINS.split(',') : [])
+            : '*',
+        methods: ['GET', 'POST'],
+        credentials: true
+    }
+});
 
-// Get port from environment or use default (Render free tier requires 10000-10020)
 const PORT = process.env.PORT || 5000;
 
-// CORS Configuration - simplified
+// CORS
 app.use(cors({
-    origin: process.env.NODE_ENV === 'production' 
-        ? (process.env.ALLOWED_ORIGINS ? process.env.ALLOWED_ORIGINS.split(',') : [])
-        : '*',
+    origin: process.env.NODE_ENV === 'production' ? (process.env.ALLOWED_ORIGINS ? process.env.ALLOWED_ORIGINS.split(',') : []) : '*',
     credentials: true,
     methods: ['GET', 'POST', 'PUT', 'DELETE', 'PATCH', 'OPTIONS']
 }));
 
-// Body parsers
+// ---------- Body parsers ----------
 app.use(express.json({ limit: '10mb' }));
 app.use(express.urlencoded({ extended: true, limit: '10mb' }));
 
-// Request logging middleware
+// ---------- 🛡️ JSON Parse Error Handler (added) ----------
+app.use((err, req, res, next) => {
+    if (err instanceof SyntaxError && err.status === 400 && 'body' in err) {
+        console.error('❌ Invalid JSON payload:', err.message);
+        return res.status(400).json({ error: 'Invalid JSON payload' });
+    }
+    next(err);
+});
+
+// ---------- File download endpoint ----------
+app.get('/api/files/download/:id', async (req, res) => {
+    const fileId = req.params.id;
+    try {
+        const db = require('./db/connection');
+        const [rows] = await db.query(
+            'SELECT file_name, mime_type, file_data FROM project_files WHERE id = ?',
+            [fileId]
+        );
+        if (rows.length === 0) return res.status(404).send('File not found');
+        const file = rows[0];
+        res.setHeader('Content-Disposition', `attachment; filename="${file.file_name}"`);
+        res.setHeader('Content-Type', file.mime_type || 'application/octet-stream');
+        res.send(file.file_data);
+    } catch (error) {
+        console.error('Download error:', error);
+        res.status(500).send('Server error');
+    }
+});
+
+// ---------- Logging ----------
 app.use((req, res, next) => {
     console.log(`${new Date().toISOString()} - ${req.method} ${req.url}`);
     next();
 });
 
-// Health check endpoint (required by Render)
+// ---------- Health & Root ----------
 app.get('/health', (req, res) => {
-    res.status(200).json({ 
-        status: 'OK', 
-        timestamp: new Date().toISOString(),
-        service: 'project-backend',
-        environment: process.env.NODE_ENV || 'development',
-        port: PORT
-    });
+    res.status(200).json({ status: 'OK', timestamp: new Date().toISOString(), service: 'project-backend', port: PORT });
 });
-
-// Root endpoint
 app.get('/', (req, res) => {
-    res.json({ 
-        message: 'Project Tracker API',
-        version: '1.0.0',
-        status: 'running',
-        health: '/health',
-        api_documentation: {
-            projects: '/api/projects',
-            panels: '/api/panels',
-            panelTasks: '/api/panel-tasks',
-            doorTasks: '/api/door-tasks',
-            accessoriesTasks: '/api/accessories-tasks',
-            cuttingTasks: '/api/cutting-tasks',
-            stripCurtainTasks: '/api/strip-curtain-tasks',
-            systemTasks: '/api/system-tasks',
-            transportationTasks: '/api/transportation-tasks', // Added
-            activityLogs: '/api/activity-logs',
-            subtasks: '/api/subtasks',
-            orders: '/api/orders'
-        },
-        views: {
-            panels: '/view-panels'
-        }
-    });
+    res.json({ message: 'Project Tracker API', version: '1.0.0', websocket: '/socket.io' });
 });
 
-// Serve static files (if you have any)
-app.use(express.static('public'));
+// ---------- Mount Auth routes (PUBLIC) ----------
+app.use('/api/auth', authRoutes);
 
-// API Routes
+// ---------- Mount REST routes ----------
+// (All routes are mounted without auth middleware for now; you can add authMiddleware as needed)
 app.use('/api/projects', projectRoutes);
 app.use('/api/panels', panelsRouter);
 app.use('/api/panel-tasks', panelTasksRoutes);
@@ -122,112 +151,44 @@ app.use('/api/accessories-tasks', accessoriesTasksRouter);
 app.use('/api/cutting-tasks', cuttingTasksRouter);
 app.use('/api/strip-curtain-tasks', stripCurtainTasksRouter);
 app.use('/api/system-tasks', systemTasksRouter);
-app.use('/api/transportation-tasks', transportationTasksRouter); // Added
+app.use('/api/transportation-tasks', transportationTasksRouter);
+app.use('/api/stock', stockRoutes);
+app.use('/api/inventory', inventoryRouter);
 app.use('/api/admin/projects', adminProjectRoutes);
 app.use('/api/activity-logs', activityLogsRouter);
 app.use('/api/subtasks', subTasksRouter);
 app.use('/api/orders', orderRouter);
 app.use('/api', excelDataRouter);
+app.use('/api/ai', aiRouter);
 
-// FIXED: 404 handler
-app.use((req, res, next) => {
-    res.status(404).json({
-        error: 'Not Found',
-        message: `Cannot ${req.method} ${req.originalUrl}`,
-        available_endpoints: [
-            '/',
-            '/health',
-            '/view-panels',
-            '/api/projects',
-            '/api/panels',
-            '/api/panel-tasks',
-            '/api/door-tasks',
-            '/api/accessories-tasks',
-            '/api/cutting-tasks',
-            '/api/strip-curtain-tasks',
-            '/api/system-tasks',
-            '/api/transportation-tasks', // Added
-            '/api/projects/status/approved',
-            '/api/activity-logs',
-            '/api/subtasks',
-            '/api/orders'
-        ]
+// ---------- Socket.IO ----------
+io.on('connection', (socket) => {
+    console.log('🟢 Socket.IO client connected:', socket.id);
+    socket.on('disconnect', () => {
+        console.log('🔴 Socket.IO client disconnected:', socket.id);
     });
 });
 
-// Global error handler
+// ---------- 404 & error handlers ----------
+app.use((req, res) => {
+    res.status(404).json({ error: 'Not Found', message: `Cannot ${req.method} ${req.originalUrl}` });
+});
 app.use((err, req, res, next) => {
     console.error('Server Error:', err.stack || err.message);
-    
-    const statusCode = err.statusCode || err.status || 500;
-    const message = process.env.NODE_ENV === 'production' && statusCode === 500
-        ? 'Internal Server Error'
-        : err.message || 'Internal Server Error';
-    
-    res.status(statusCode).json({
-        error: message,
-        timestamp: new Date().toISOString(),
-        path: req.path,
-        ...(process.env.NODE_ENV !== 'production' && { stack: err.stack })
-    });
+    res.status(500).json({ error: err.message || 'Internal Server Error' });
 });
 
-// Handle unhandled promise rejections
-process.on('unhandledRejection', (reason, promise) => {
-    console.error('Unhandled Rejection at:', promise, 'reason:', reason);
+// ---------- Start server ----------
+server.listen(PORT, '0.0.0.0', () => {
+    console.log(`\n===========================================`);
+    console.log(`🚀 Server running on port: ${PORT}`);
+    console.log(`🔌 WebSocket enabled (non-AI)`);
+    console.log(`🤖 AI chat endpoint: POST /api/ai/chat`);
+    console.log(`🔐 Auth endpoints: /api/auth/register & /api/auth/login`);
+    console.log(`📦 Inventory API: /api/inventory`);
+    console.log(`📁 Environment: ${process.env.NODE_ENV || 'development'}`);
+    console.log(`===========================================\n`);
 });
 
-// Handle uncaught exceptions
-process.on('uncaughtException', (error) => {
-    console.error('Uncaught Exception:', error);
-    process.exit(1);
-});
-
-// Start server
-const server = app.listen(PORT, '0.0.0.0', () => {
-    console.log(`
-===========================================
-🚀 Server running on port: ${PORT}
-📁 Environment: ${process.env.NODE_ENV || 'development'}
-⏰ Started at: ${new Date().toISOString()}
-===========================================
-    `);
-    console.log('✅ Server is ready to accept requests');
-    console.log(`✅ Health check: http://localhost:${PORT}/health`);
-    console.log(`✅ Panels API: http://localhost:${PORT}/api/panels`);
-    console.log(`✅ Panels View: http://localhost:${PORT}/view-panels`);
-    console.log(`✅ Transportation Tasks API: http://localhost:${PORT}/api/transportation-tasks`); // Added
-    
-    // Log loaded modules
-    console.log('\n📦 Loaded modules:');
-    console.log('- projectRoutes:', projectRoutes ? '✓' : '✗');
-    console.log('- panelsRouter:', panelsRouter ? '✓' : '✗');
-    console.log('- panelTasksRoutes:', panelTasksRoutes ? '✓' : '✗');
-    console.log('- doorTasksRouter:', doorTasksRouter ? '✓' : '✗');
-    console.log('- accessoriesTasksRouter:', accessoriesTasksRouter ? '✓' : '✗');
-    console.log('- cuttingTasksRouter:', cuttingTasksRouter ? '✓' : '✗');
-    console.log('- stripCurtainTasksRouter:', stripCurtainTasksRouter ? '✓' : '✗');
-    console.log('- systemTasksRouter:', systemTasksRouter ? '✓' : '✗');
-    console.log('- transportationTasksRouter:', transportationTasksRouter ? '✓' : '✗'); // Added
-    console.log('- adminProjectRoutes:', adminProjectRoutes ? '✓' : '✗');
-    console.log('- activityLogsRouter:', activityLogsRouter ? '✓' : '✗');
-    console.log('- subTasksRouter:', subTasksRouter ? '✓' : '✗');
-    console.log('- orderRouter:', orderRouter ? '✓' : '✗');
-    console.log('- excelDataRouter:', excelDataRouter ? '✓' : '✗');
-});
-
-// Graceful shutdown for Render
-process.on('SIGTERM', () => {
-    console.log('SIGTERM received, shutting down gracefully...');
-    server.close(() => {
-        console.log('Server closed');
-        process.exit(0);
-    });
-    
-    setTimeout(() => {
-        console.error('Force shutdown after timeout');
-        process.exit(1);
-    }, 10000);
-});
-
+process.on('SIGTERM', () => server.close(() => process.exit(0)));
 module.exports = server;

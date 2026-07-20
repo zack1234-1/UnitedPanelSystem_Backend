@@ -1,13 +1,11 @@
-// routes/cuttingTasks.js
-
 const express = require('express');
 const router = express.Router();
-const pool = require('../db/connection'); 
+const pool = require('../db/connection');
 const { updateProjectCounts } = require('./projectUpdater');
-const multer = require('multer'); // <--- Import the update utility
+const multer = require('multer');
+const auth = require('../middleware/auth');
 
-// Define the specific task type for this router's database columns
-const TASK_TYPE_PREFIX = 'cutting'; 
+const TASK_TYPE_PREFIX = 'cutting';
 
 const upload = multer({
     storage: multer.memoryStorage(),
@@ -15,14 +13,12 @@ const upload = multer({
     fileFilter: (req, file, cb) => {
         const allowedTypes = /jpeg|jpg|png|gif|webp/;
         const mimetype = allowedTypes.test(file.mimetype);
-        if (mimetype) {
-            return cb(null, true);
-        } else {
-            cb(new Error('Only image files are allowed!'));
-        }
+        if (mimetype) return cb(null, true);
+        else cb(new Error('Only image files are allowed!'));
     }
 });
 
+// ---------- Utility: formatTask with uploader info ----------
 const formatTask = (task) => {
     const result = {
         id: task.id,
@@ -34,7 +30,17 @@ const formatTask = (task) => {
         dueDate: task.due_date,
         createdAt: task.created_at,
         signatureDate: task.signature_date,
-        imageDate: task.image_date
+        imageDate: task.image_date,
+        signatureUploadedBy: task.signature_uploaded_by,
+        imageUploadedBy: task.image_uploaded_by,
+        signatureUploadedAt: task.signature_uploaded_at,
+        imageUploadedAt: task.image_uploaded_at,
+        signatureUploader: task.signature_uploader_username
+            ? { id: task.signature_uploaded_by, username: task.signature_uploader_username }
+            : null,
+        imageUploader: task.image_uploader_username
+            ? { id: task.image_uploaded_by, username: task.image_uploader_username }
+            : null,
     };
     if (task.signature_data && task.signature_mimetype) {
         result.signatureUrl = `data:${task.signature_mimetype};base64,${task.signature_data.toString('base64')}`;
@@ -46,16 +52,94 @@ const formatTask = (task) => {
 };
 
 // =========================================================
-// GET /api/cutting-tasks
+// Helper: Create or update transportation task
 // =========================================================
-router.get('/', async (req, res) => {
-    // 🚨 FIX: The string value 'Approved' must be wrapped in single quotes within the SQL query.
+const createOrUpdateTransportationTask = async (cuttingTask) => {
+    try {
+        const [existing] = await pool.execute(
+            'SELECT id FROM transportation_tasks WHERE cutting_task_id = ?',
+            [cuttingTask.id]
+        );
+
+        if (existing.length > 0) {
+            const updateSql = `
+                UPDATE transportation_tasks 
+                SET status = 'pending', 
+                    title = ?, 
+                    description = ?, 
+                    priority = ?, 
+                    project_no = ?, 
+                    due_date = ?
+                WHERE cutting_task_id = ?
+            `;
+            await pool.execute(updateSql, [
+                cuttingTask.title,
+                cuttingTask.description || null,
+                cuttingTask.priority || 'empty',
+                cuttingTask.project_no,
+                cuttingTask.due_date || null,
+                cuttingTask.id
+            ]);
+            console.log(`✅ Updated existing transportation task for cutting task ${cuttingTask.id} to 'pending'`);
+        } else {
+            const insertSql = `
+                INSERT INTO transportation_tasks 
+                (title, description, priority, status, project_no, approve_status, due_date, cutting_task_id, created_at) 
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, NOW())
+            `;
+            const values = [
+                cuttingTask.title,
+                cuttingTask.description || null,
+                cuttingTask.priority || 'empty',
+                'pending',
+                cuttingTask.project_no,
+                'Approved',
+                cuttingTask.due_date || null,
+                cuttingTask.id
+            ];
+            await pool.execute(insertSql, values);
+            console.log(`✅ Created new transportation task for cutting task ${cuttingTask.id}`);
+        }
+    } catch (err) {
+        console.error('Failed to create or update transportation task:', err);
+    }
+};
+
+// =========================================================
+// Helper: Update transportation task status (if exists)
+// =========================================================
+const updateTransportationTaskStatus = async (cuttingTaskId, newStatus) => {
+    try {
+        const updateSql = `
+            UPDATE transportation_tasks 
+            SET status = ? 
+            WHERE cutting_task_id = ?
+        `;
+        const [result] = await pool.execute(updateSql, [newStatus, cuttingTaskId]);
+        if (result.affectedRows > 0) {
+            console.log(`✅ Transportation task status updated to '${newStatus}' for cutting task ${cuttingTaskId}`);
+        } else {
+            console.log(`ℹ️ No transportation task found for cutting task ${cuttingTaskId}`);
+        }
+    } catch (err) {
+        console.error('Failed to update transportation task status:', err);
+    }
+};
+
+// =========================================================
+// GET /api/cutting-tasks (with uploader info)
+// =========================================================
+router.get('/', auth, async (req, res) => {
     const query = `
-        SELECT * FROM cutting_tasks 
-        WHERE approve_status = 'Approved' 
-        ORDER BY created_at DESC
+        SELECT ct.*,
+               su.username AS signature_uploader_username,
+               iu.username AS image_uploader_username
+        FROM cutting_tasks ct
+        LEFT JOIN users su ON ct.signature_uploaded_by = su.id
+        LEFT JOIN users iu ON ct.image_uploaded_by = iu.id
+        WHERE ct.approve_status = 'Approved'
+        ORDER BY ct.created_at DESC
     `;
-    
     try {
         const [results] = await pool.execute(query);
         res.json(results.map(formatTask));
@@ -64,69 +148,166 @@ router.get('/', async (req, res) => {
         return res.status(500).json({ error: 'Failed to fetch approved cutting tasks' });
     }
 });
+
 // =========================================================
-// POST /api/cutting-tasks - Create (Increments total_cutting)
+// POST /api/cutting-tasks - Create or Update (if panel_task_id exists)
 // =========================================================
-router.post('/', async (req, res) => {
-    const { title, description, priority, status, project_no, due_date, approve_status } = req.body;
-    
+router.post('/', auth, async (req, res) => {
+    const { 
+        title, 
+        description, 
+        priority, 
+        status, 
+        project_no, 
+        due_date, 
+        approve_status,
+        panel_task_id
+    } = req.body;
+
     if (!title || !title.trim()) {
         return res.status(400).json({ error: 'Title is required' });
     }
-
     if (!project_no || !project_no.trim()) {
         return res.status(400).json({ error: 'Project No is required' });
     }
-    
+
+    const sanitizedPanelTaskId = panel_task_id ? parseInt(panel_task_id) : null;
     const initialStatus = status || 'pending';
 
-    // ✅ approve_status added to column list, all optionals sanitized to null
-    const insertSql = `INSERT INTO cutting_tasks 
-        (title, description, priority, status, project_no, due_date, approve_status, created_at) 
-        VALUES (?, ?, ?, ?, ?, ?, ?, NOW())`;
-    
-    try {
-        const [insertResults] = await pool.execute(insertSql, [
-            title, 
-            description ?? null,        // ✅ undefined → null
-            priority ?? null,           // ✅ undefined → null
-            initialStatus, 
-            project_no, 
-            due_date ?? null,           // ✅ undefined → null
-            approve_status ?? 'Pending' // ✅ undefined → 'Pending'
-        ]);
-
-        await updateProjectCounts(project_no, TASK_TYPE_PREFIX, 'total', 1);
-
-        if (initialStatus.toLowerCase() === 'completed') {
-            await updateProjectCounts(project_no, TASK_TYPE_PREFIX, 'completed', 1);
+    // --- Check if a cutting task already exists for this panel_task_id ---
+    let existingTask = null;
+    if (sanitizedPanelTaskId) {
+        const [rows] = await pool.execute(
+            'SELECT * FROM cutting_tasks WHERE panel_task_id = ?',
+            [sanitizedPanelTaskId]
+        );
+        if (rows.length > 0) {
+            existingTask = rows[0];
         }
-        
-        const [rows] = await pool.execute('SELECT * FROM cutting_tasks WHERE id = ?', [insertResults.insertId]);
-        res.status(201).json(formatTask(rows[0]));
-    } catch (err) {
-        console.error('Error creating cutting task:', err);
-        return res.status(500).json({ error: 'Failed to create cutting task' });
+    }
+
+    if (existingTask) {
+        // --- UPDATE existing task ---
+        const oldStatus = existingTask.status.toLowerCase();
+        const newStatus = initialStatus.toLowerCase();
+
+        // Build dynamic SET clause
+        const allowedFields = ['title', 'description', 'priority', 'status', 'project_no', 'due_date', 'approve_status'];
+        const fieldsToUpdate = [];
+        const updateValues = [];
+        for (const field of allowedFields) {
+            let value = req.body[field];
+            if (value !== undefined) {
+                if ((field === 'description' || field === 'due_date') && value === '') value = null;
+                fieldsToUpdate.push(`${field} = ?`);
+                updateValues.push(value);
+            }
+        }
+        if (fieldsToUpdate.length === 0) {
+            return res.status(400).json({ error: 'No fields to update.' });
+        }
+
+        const setClause = fieldsToUpdate.join(', ');
+        const updateSql = `UPDATE cutting_tasks SET ${setClause} WHERE id = ?`;
+        const finalBindValues = [...updateValues, existingTask.id];
+
+        try {
+            await pool.execute(updateSql, finalBindValues);
+
+            // --- Update project counts (total remains the same; adjust completed if status changed) ---
+            if (newStatus === 'completed' && oldStatus !== 'completed') {
+                await updateProjectCounts(project_no, TASK_TYPE_PREFIX, 'completed', 1);
+            } else if (newStatus !== 'completed' && oldStatus === 'completed') {
+                await updateProjectCounts(project_no, TASK_TYPE_PREFIX, 'completed', -1);
+            }
+
+            // --- Transportation task logic ---
+            if (oldStatus !== 'completed' && newStatus === 'completed') {
+                // Fetch the updated task to pass to helper
+                const [updatedTask] = await pool.execute('SELECT * FROM cutting_tasks WHERE id = ?', [existingTask.id]);
+                if (updatedTask.length > 0) {
+                    await createOrUpdateTransportationTask(updatedTask[0]);
+                }
+            } else if (newStatus === 'on-hold' || (oldStatus === 'completed' && newStatus !== 'completed')) {
+                await updateTransportationTaskStatus(existingTask.id, 'on-hold');
+            }
+
+            // Fetch and return the updated task with uploader info
+            const [rows] = await pool.execute(
+                `SELECT ct.*,
+                        su.username AS signature_uploader_username,
+                        iu.username AS image_uploader_username
+                 FROM cutting_tasks ct
+                 LEFT JOIN users su ON ct.signature_uploaded_by = su.id
+                 LEFT JOIN users iu ON ct.image_uploaded_by = iu.id
+                 WHERE ct.id = ?`,
+                [existingTask.id]
+            );
+            res.status(200).json(formatTask(rows[0])); // 200 OK for update
+        } catch (err) {
+            console.error('Error updating cutting task (via panel_task_id):', err);
+            return res.status(500).json({ error: 'Failed to update cutting task' });
+        }
+    } else {
+        // --- CREATE new task ---
+        const insertSql = `
+            INSERT INTO cutting_tasks 
+            (title, description, priority, status, project_no, due_date, approve_status, panel_task_id, created_at) 
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, NOW())
+        `;
+
+        try {
+            const [insertResults] = await pool.execute(insertSql, [
+                title,
+                description ?? null,
+                priority ?? null,
+                initialStatus,
+                project_no,
+                due_date ?? null,
+                approve_status ?? 'Pending',
+                sanitizedPanelTaskId
+            ]);
+
+            await updateProjectCounts(project_no, TASK_TYPE_PREFIX, 'total', 1);
+            if (initialStatus.toLowerCase() === 'completed') {
+                await updateProjectCounts(project_no, TASK_TYPE_PREFIX, 'completed', 1);
+            }
+
+            // If created as completed, create transportation task
+            if (initialStatus.toLowerCase() === 'completed') {
+                const [newTask] = await pool.execute('SELECT * FROM cutting_tasks WHERE id = ?', [insertResults.insertId]);
+                if (newTask.length > 0) {
+                    await createOrUpdateTransportationTask(newTask[0]);
+                }
+            }
+
+            const [rows] = await pool.execute('SELECT * FROM cutting_tasks WHERE id = ?', [insertResults.insertId]);
+            res.status(201).json(formatTask(rows[0]));
+        } catch (err) {
+            console.error('Error creating cutting task:', err);
+            return res.status(500).json({ error: 'Failed to create cutting task' });
+        }
     }
 });
 
 // =========================================================
-// PATCH /api/cutting-tasks/:id - Update (Handles status change)
+// PATCH /api/cutting-tasks/:id - Update (with media clear flags)
 // =========================================================
-router.patch('/:id', async (req, res) => {
+router.patch('/:id', auth, async (req, res) => {
     const taskId = parseInt(req.params.id);
     const updates = req.body;
-    const TASK_TYPE_PREFIX = 'cutting'; // Ensure this is defined or passed in
-    
+
     if (Object.keys(updates).length === 0) {
         return res.status(400).json({ error: 'Request body required.' });
     }
 
+    // Fetch previous task to get project_no and status for counts
     let previousTask;
-
     try {
-        // 1. Fetch the existing task status and project number BEFORE updating
-        const [existingRows] = await pool.execute('SELECT project_no, status FROM cutting_tasks WHERE id = ?', [taskId]);
+        const [existingRows] = await pool.execute(
+            'SELECT project_no, status, title, description, priority, due_date FROM cutting_tasks WHERE id = ?',
+            [taskId]
+        );
         if (existingRows.length === 0) {
             return res.status(404).json({ error: 'Task not found' });
         }
@@ -136,19 +317,35 @@ router.patch('/:id', async (req, res) => {
         return res.status(500).json({ error: 'Database error before update' });
     }
 
-    // --- Dynamic UPDATE Query Construction (Existing Logic) ---
+    const oldStatus = previousTask.status.toLowerCase();
+    const newStatus = updates.status ? updates.status.toLowerCase() : oldStatus;
+
+    // ------ Allowed text fields ------
     const allowedFields = ['title', 'description', 'priority', 'status', 'project_no', 'due_date'];
     const fieldsToUpdate = [];
     const updateValues = [];
 
     for (const field of allowedFields) {
         if (updates[field] !== undefined) {
-            fieldsToUpdate.push(`${field} = ?`); 
+            fieldsToUpdate.push(`${field} = ?`);
             const value = (updates[field] === '' && (field === 'description' || field === 'due_date')) ? null : updates[field];
             updateValues.push(value);
         }
     }
 
+    // ------ Handle media clearing flags ------
+    const clearImage = updates.clearImage === true;
+    const clearSignature = updates.clearSignature === true;
+
+    if (clearImage) {
+        fieldsToUpdate.push('image_data = NULL, image_mimetype = NULL, image_date = NULL, image_uploaded_by = NULL, image_uploaded_at = NULL');
+        // no values needed for these (they are constants)
+    }
+    if (clearSignature) {
+        fieldsToUpdate.push('signature_data = NULL, signature_mimetype = NULL, signature_date = NULL, signature_uploaded_by = NULL, signature_uploaded_at = NULL');
+    }
+
+    // If no fields to update and no clear flags, return error
     if (fieldsToUpdate.length === 0) {
         return res.status(400).json({ error: 'No valid fields provided for update.' });
     }
@@ -158,153 +355,99 @@ router.patch('/:id', async (req, res) => {
     const finalBindValues = [...updateValues, taskId];
 
     try {
-        // 2. Execute the task update
         await pool.execute(updateSql, finalBindValues);
-        
-        // --- 3. Project Count Synchronization Logic ---
 
+        // --- Project counts ---
         const oldProjectNo = previousTask.project_no;
-        const newProjectNo = updates.project_no || oldProjectNo; // Use new if provided, otherwise stick to old
-        const oldStatus = previousTask.status.toLowerCase();
-        // Determine the new status after the update
-        const newStatus = updates.status ? updates.status.toLowerCase() : oldStatus;
-        
-        // 3a. Handle Project Transfer (project_no change)
+        const newProjectNo = updates.project_no || oldProjectNo;
         if (oldProjectNo !== newProjectNo) {
-            
-            // i. Decrement counts from OLD Project (It loses one task)
             await updateProjectCounts(oldProjectNo, TASK_TYPE_PREFIX, 'total', -1);
             if (oldStatus === 'completed') {
                 await updateProjectCounts(oldProjectNo, TASK_TYPE_PREFIX, 'completed', -1);
             }
-
-            // ii. Increment counts for NEW Project (It gains one task)
             await updateProjectCounts(newProjectNo, TASK_TYPE_PREFIX, 'total', 1);
             if (newStatus === 'completed') {
                 await updateProjectCounts(newProjectNo, TASK_TYPE_PREFIX, 'completed', 1);
             }
-        } 
-        
-        // 3b. Handle Status Change (Only if project_no did NOT change, or the task status was updated)
-        else { 
-            // Only update the completed count on the *same* project
-            
-            // Check for transition to 'completed' (+1 to completed_cutting)
+        } else {
             if (newStatus === 'completed' && oldStatus !== 'completed') {
                 await updateProjectCounts(newProjectNo, TASK_TYPE_PREFIX, 'completed', 1);
-            } 
-            // Check for transition away from 'completed' (-1 to completed_cutting)
-            else if (newStatus !== 'completed' && oldStatus === 'completed') {
+            } else if (newStatus !== 'completed' && oldStatus === 'completed') {
                 await updateProjectCounts(newProjectNo, TASK_TYPE_PREFIX, 'completed', -1);
             }
         }
-        
-        // 4. Fetch and return the updated row
-        const [rows] = await pool.execute('SELECT * FROM cutting_tasks WHERE id = ?', [taskId]);
+
+        // --- Transportation task logic ---
+        if (oldStatus !== 'completed' && newStatus === 'completed') {
+            const [updatedTask] = await pool.execute('SELECT * FROM cutting_tasks WHERE id = ?', [taskId]);
+            if (updatedTask.length > 0) {
+                await createOrUpdateTransportationTask(updatedTask[0]);
+            }
+        } else if (newStatus === 'on-hold' || (oldStatus === 'completed' && newStatus !== 'completed')) {
+            await updateTransportationTaskStatus(taskId, 'on-hold');
+        }
+
+        // Fetch and return the updated task with uploader info
+        const [rows] = await pool.execute(
+            `SELECT ct.*,
+                    su.username AS signature_uploader_username,
+                    iu.username AS image_uploader_username
+             FROM cutting_tasks ct
+             LEFT JOIN users su ON ct.signature_uploaded_by = su.id
+             LEFT JOIN users iu ON ct.image_uploaded_by = iu.id
+             WHERE ct.id = ?`,
+            [taskId]
+        );
         res.json(formatTask(rows[0]));
     } catch (err) {
-        console.error('Error updating cutting task or project counts:', err);
+        console.error('Error updating cutting task or handling transportation:', err);
         return res.status(500).json({ error: 'Failed to update cutting task' });
     }
 });
 
 // =========================================================
-// DELETE /api/cutting-tasks/:id - Delete (Decrements total/completed_cutting)
+// POST /api/cutting-tasks/:id/media - Upload media (record uploader)
 // =========================================================
-router.delete('/:id', async (req, res) => {
-    const taskId = parseInt(req.params.id);
-    
-    let taskToDelete;
-
-    try {
-        // 1. Fetch the task's project number and status BEFORE deletion
-        const [existingRows] = await pool.execute('SELECT project_no, status FROM cutting_tasks WHERE id = ?', [taskId]);
-        if (existingRows.length === 0) {
-            return res.status(404).json({ error: 'Task not found' });
-        }
-        taskToDelete = existingRows[0];
-        
-        // 2. Delete the task
-        const [results] = await pool.execute('DELETE FROM cutting_tasks WHERE id = ?', [taskId]);
-        
-        if (results.affectedRows === 0) {
-            return res.status(404).json({ error: 'Task not found' });
-        }
-
-        // 3. Update project counts: Decrement total_cutting
-        await updateProjectCounts(taskToDelete.project_no, TASK_TYPE_PREFIX, 'total', -1);
-        
-        // 4. If the deleted task was 'completed', also decrement completed_cutting
-        if (taskToDelete.status.toLowerCase() === 'completed') {
-            await updateProjectCounts(taskToDelete.project_no, TASK_TYPE_PREFIX, 'completed', -1);
-        }
-        
-        res.status(200).json({ message: 'Task deleted successfully' });
-    } catch (err) {
-        console.error('Error deleting cutting task or updating project counts:', err);
-        return res.status(500).json({ error: 'Failed to delete cutting task' });
-    }
-});
-
-// =========================================================
-// POST /api/panel-tasks/:id/media - Upload both signature and image in one request
-// =========================================================
-router.post('/:id/media', upload.fields([
+router.post('/:id/media', auth, upload.fields([
     { name: 'signature', maxCount: 1 },
     { name: 'image', maxCount: 1 }
 ]), async (req, res) => {
     console.log(`POST /api/cutting-tasks/${req.params.id}/media called`);
-
     const taskId = parseInt(req.params.id);
-    const files = req.files; // { signature?: [file], image?: [file] }
-
-    // Ensure at least one file is provided
+    const userId = req.user.id;
+    const files = req.files;
     if (!files || (!files.signature && !files.image)) {
         return res.status(400).json({ error: 'At least one file (signature or image) must be uploaded' });
     }
-
     try {
-        // Dynamically build the SET clause and values based on which files are present
         const setClauses = [];
         const values = [];
-
         if (files.signature) {
-            const signatureFile = files.signature[0];
-            console.log('Signature file details:', {
-                fieldname: signatureFile.fieldname,
-                originalname: signatureFile.originalname,
-                mimetype: signatureFile.mimetype,
-                size: signatureFile.size,
-            });
-            setClauses.push('signature_data = ?, signature_mimetype = ?, signature_date = NOW()');
-            values.push(signatureFile.buffer, signatureFile.mimetype);
+            const sig = files.signature[0];
+            setClauses.push('signature_data = ?, signature_mimetype = ?, signature_date = NOW(), signature_uploaded_by = ?, signature_uploaded_at = NOW()');
+            values.push(sig.buffer, sig.mimetype, userId);
         }
-
         if (files.image) {
-            const imageFile = files.image[0];
-            console.log('Image file details:', {
-                fieldname: imageFile.fieldname,
-                originalname: imageFile.originalname,
-                mimetype: imageFile.mimetype,
-                size: imageFile.size,
-            });
-            setClauses.push('image_data = ?, image_mimetype = ?, image_date = NOW()');
-            values.push(imageFile.buffer, imageFile.mimetype);
+            const img = files.image[0];
+            setClauses.push('image_data = ?, image_mimetype = ?, image_date = NOW(), image_uploaded_by = ?, image_uploaded_at = NOW()');
+            values.push(img.buffer, img.mimetype, userId);
         }
-
         const updateSql = `UPDATE cutting_tasks SET ${setClauses.join(', ')} WHERE id = ?`;
         values.push(taskId);
-
         await pool.execute(updateSql, values);
-
-        // Fetch and return the updated task
-        const selectSql = 'SELECT * FROM cutting_tasks WHERE id = ?';
+        const selectSql = `
+            SELECT ct.*,
+                   su.username AS signature_uploader_username,
+                   iu.username AS image_uploader_username
+            FROM cutting_tasks ct
+            LEFT JOIN users su ON ct.signature_uploaded_by = su.id
+            LEFT JOIN users iu ON ct.image_uploaded_by = iu.id
+            WHERE ct.id = ?
+        `;
         const [rows] = await pool.execute(selectSql, [taskId]);
-
         if (rows.length === 0) {
             return res.status(404).json({ error: 'Task not found' });
         }
-
         res.json(formatTask(rows[0]));
     } catch (err) {
         console.error('Error uploading media:', err);
@@ -312,5 +455,76 @@ router.post('/:id/media', upload.fields([
     }
 });
 
+// =========================================================
+// DELETE /api/cutting-tasks/:id - Delete task + linked files
+// =========================================================
+router.delete('/:id', auth, async (req, res) => {
+    const taskId = parseInt(req.params.id);
+    let taskToDelete;
+    let connection;
+
+    try {
+        // Acquire a connection and start transaction
+        connection = await pool.getConnection();
+        await connection.beginTransaction();
+
+        // 1. Get task details (project_no, status)
+        const [existingRows] = await connection.execute(
+            'SELECT project_no, status FROM cutting_tasks WHERE id = ?',
+            [taskId]
+        );
+        if (existingRows.length === 0) {
+            await connection.rollback();
+            return res.status(404).json({ error: 'Task not found' });
+        }
+        taskToDelete = existingRows[0];
+
+        // 2. Find and delete all linked project_files
+        const [fileRows] = await connection.execute(
+            'SELECT id FROM project_files WHERE taskNo = ?',
+            [taskId]
+        );
+        if (fileRows.length > 0) {
+            const fileIds = fileRows.map(f => f.id);
+            const placeholders = fileIds.map(() => '?').join(',');
+            await connection.execute(
+                `DELETE FROM project_files WHERE id IN (${placeholders})`,
+                fileIds
+            );
+            console.log(`🗑️ Deleted ${fileRows.length} file(s) linked to cutting task ${taskId}`);
+        }
+
+        // 3. Delete the cutting task
+        const [deleteResult] = await connection.execute(
+            'DELETE FROM cutting_tasks WHERE id = ?',
+            [taskId]
+        );
+        if (deleteResult.affectedRows === 0) {
+            await connection.rollback();
+            return res.status(404).json({ error: 'Task not found' });
+        }
+
+        // 4. Update project totals (total and completed)
+        await updateProjectCounts(taskToDelete.project_no, TASK_TYPE_PREFIX, 'total', -1);
+        if (taskToDelete.status.toLowerCase() === 'completed') {
+            await updateProjectCounts(taskToDelete.project_no, TASK_TYPE_PREFIX, 'completed', -1);
+        }
+
+        await connection.commit();
+
+        res.status(200).json({
+            message: 'Cutting task and linked files deleted successfully',
+            taskId,
+            filesDeleted: fileRows.length
+        });
+
+    } catch (err) {
+        if (connection) await connection.rollback();
+        console.error('Error deleting cutting task with files:', err);
+        return res.status(500).json({ error: 'Failed to delete task and its files' });
+    } finally {
+        if (connection) connection.release();
+    }
+});
 
 module.exports = router;
